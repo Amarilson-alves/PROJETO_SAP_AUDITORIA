@@ -1,0 +1,13 @@
+# Ignorar arquivos de dados e resultados
+data/*.xlsx
+output/*.xlsx
+*.xlsx
+
+# Ignorar logs e pastas temporárias
+logs/
+__pycache__/
+.vscode/
+
+# Ignorar ambiente virtual (se houver)
+venv/
+.env
