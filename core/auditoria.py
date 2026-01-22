@@ -74,5 +74,14 @@ class AuditoriaAMED:
 
         df_aud['STATUS_AUD'], df_aud['AÇÃO_AUD'], df_aud['SUGESTÃO_AUD'], df_aud['RESULTADO_OPERACIONAL'] = l_st, l_ac, l_sg, l_res
         
+        # --- GARANTIA DE CONTRATO (Solução 3) ---
+        COLUNAS_OBRIGATORIAS = [
+            'STATUS_AUD', 'AÇÃO_AUD', 'SUGESTÃO_AUD', 'RESULTADO_OPERACIONAL'
+        ]
+
+        for col in COLUNAS_OBRIGATORIAS:
+            if col not in df_aud.columns:
+                df_aud[col] = 'N/A'
+        
         colunas_finais = [c for c in df_aud.columns if c not in ['Tipo de projeto', 'SALDO_AUDIT']]
         return df_aud[colunas_finais]
