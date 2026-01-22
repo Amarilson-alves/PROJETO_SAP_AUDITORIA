@@ -1,3 +1,4 @@
+# main.py
 import os
 import pandas as pd
 from core.sap_reader import SAPReader
@@ -6,15 +7,25 @@ from core.auditoria import AuditoriaAMED
 from core.validator import DataValidator
 from utils.logger import configurar_logger
 from utils.formatting import ExcelFormatter
+from utils.mapping import COLUNAS_PADRAO_MB51, COLUNAS_PADRAO_MB52, COLUNAS_PADRAO_ALDREI, OFFSET_DASHBOARD
 
-def processar_tudo():
-    # --- AUTO-SETUP ---
-    # Garante que as pastas existam antes de iniciar
+def inicializar_ambiente():
     for pasta in ['data', 'output', 'logs']:
         if not os.path.exists(pasta):
             os.makedirs(pasta)
+    
+    if not os.listdir('data'):
+        return False
+    return True
 
+def processar_tudo():
+    pd.set_option('mode.chained_assignment', None)
     log = configurar_logger()
+    
+    if not inicializar_ambiente():
+        log.error("❌ Pasta 'data' vazia ou inexistente. Abortando.")
+        return
+
     log.info("🚀 Iniciando Motor de Auditoria SAP PRO")
 
     try:
@@ -23,47 +34,42 @@ def processar_tudo():
         proc = MMProcessor()
         audit = AuditoriaAMED()
 
-        # 1. LEITURA
-        log.info("📥 Carregando arquivos da pasta /data...")
-        df51 = reader.carregar_mb51('data/MB51.xlsx')
-        df52 = reader.carregar_mb52('data/MB52.xlsx')
-        df_ald = reader.carregar_aldrei('data/Aldrei.xlsx')
-
-        # 2. VALIDAÇÃO
-        colunas_mb51 = ['Centro', 'Material', 'Quantidade', 'Tipo de movimento']
-        if not validator.validar_colunas(df51, "MB51", colunas_mb51):
+        # 1. LEITURA GRANULAR
+        try:
+            df51 = reader.carregar_mb51('data/MB51.xlsx')
+            df52 = reader.carregar_mb52('data/MB52.xlsx')
+            df_ald = reader.carregar_aldrei('data/Aldrei.xlsx')
+        except Exception as e:
+            log.error(f"❌ Erro na leitura dos arquivos: {str(e)}")
             return
 
-        # 3. LOG INTELIGENTE - Verificação de SKUs da Aldrei no SAP
-        skus_sap = set(df51['Material'].unique())
-        skus_aldrei = set(df_ald['SKU'].unique())
+        # 2. VALIDAÇÃO COMPLETA
+        validacao = [
+            validator.validar_colunas(df51, "MB51", COLUNAS_PADRAO_MB51),
+            validator.validar_colunas(df52, "MB52", COLUNAS_PADRAO_MB52),
+            validator.validar_colunas(df_ald, "Aldrei", COLUNAS_PADRAO_ALDREI)
+        ]
         
-        faltantes_no_sap = skus_aldrei - skus_sap
-        
-        if faltantes_no_sap:
-            log.warning(f"⚠️ {len(faltantes_no_sap)} SKUs da Aldrei NÃO foram encontrados em nenhum Centro SAP.")
-            for sku in list(faltantes_no_sap)[:5]: # Loga os 5 primeiros para não encher o ficheiro
-                log.warning(f"   --> SKU {sku} ausente nas MB51/MB52.")
-        
-        # 4. PROCESSAMENTO
+        if not all(validacao):
+            log.error("❌ Falha na validação de colunas. Verifique os arquivos.")
+            return
+
+        # 3. PROCESSAMENTO
         log.info("⚙️ Processando inteligência MM e Auditoria...")
         aba1 = proc.processar_aba1(df51, df52)
         aba2 = audit.processar_aba2(df_ald)
 
-        # 5. EXPORTAÇÃO E FORMATAÇÃO
-        saida = 'output/Resultado_Pia_do_Sul_PRO.xlsx'
+        # 4. EXPORTAÇÃO
+        saida = 'output/Resultado_Auditoria_PRO.xlsx'
         with pd.ExcelWriter(saida, engine='xlsxwriter') as writer:
             aba1.to_excel(writer, sheet_name='analise MB', index=False)
-            
-            # startrow=8 deixa as primeiras 8 linhas livres para o Dashboard
-            aba2.to_excel(writer, sheet_name='analise auditoria', index=False, startrow=8)
-            
+            aba2.to_excel(writer, sheet_name='analise auditoria', index=False, startrow=OFFSET_DASHBOARD)
             ExcelFormatter.aplicar_formato(writer, aba1, aba2)
 
-        log.info(f"✅ PROCESSO CONCLUÍDO! Resultado em: {saida}")
+        log.info(f"✅ PROCESSO CONCLUÍDO! Resultado: {saida}")
 
     except Exception as e:
-        log.error(f"❌ ERRO CRÍTICO: {str(e)}", exc_info=True)
+        log.error(f"❌ ERRO CRÍTICO NO SISTEMA: {str(e)}", exc_info=True)
 
 if __name__ == "__main__":
     processar_tudo()
