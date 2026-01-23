@@ -9,50 +9,82 @@ class ExcelFormatter:
         sheet_data = writer.sheets['analise auditoria']
         sheet_dash.activate()
 
-        # Estilos
-        header_fmt = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': '#FFFFFF', 'bg_color': '#1F4E78', 'align': 'center'})
-        card_label_fmt = workbook.add_format({'bold': True, 'font_size': 11, 'bg_color': '#D9E1F2', 'border': 1, 'align': 'center'})
-        card_val_fmt = workbook.add_format({'bold': True, 'font_size': 14, 'border': 1, 'align': 'center', 'font_color': '#1F4E78'})
-        card_money_fmt = workbook.add_format({'bold': True, 'font_size': 12, 'border': 1, 'align': 'center', 'font_color': '#006100', 'num_format': 'R$ #,##0.00'})
-        aliado_header_fmt = workbook.add_format({'bold': True, 'bg_color': '#EAEAEA', 'border': 1, 'align': 'center'})
+        # --- ESTILOS PROFISSIONAIS ---
+        # Cores padrão corporativo (Azul Petróleo e Cinza)
+        header_style = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': 'white', 'bg_color': '#1F4E78', 'align': 'center', 'valign': 'vcenter'})
+        card_title_style = workbook.add_format({'bold': True, 'font_size': 10, 'font_color': '#1F4E78', 'bg_color': '#E7E6E6', 'border': 1, 'align': 'center'})
+        card_value_style = workbook.add_format({'bold': True, 'font_size': 14, 'font_color': '#333333', 'bg_color': 'white', 'border': 1, 'align': 'center'})
+        money_style = workbook.add_format({'bold': True, 'font_size': 14, 'font_color': '#006100', 'bg_color': '#C6EFCE', 'border': 1, 'align': 'center', 'num_format': 'R$ #,##0.00'})
+        
+        table_header = workbook.add_format({'bold': True, 'bg_color': '#1F4E78', 'font_color': 'white', 'border': 1})
+        table_row = workbook.add_format({'border': 1})
+        table_money = workbook.add_format({'border': 1, 'num_format': 'R$ #,##0.00'})
 
-        # 1. TÍTULO
-        sheet_dash.merge_range('B2:F2', 'PAINEL DE INDICADORES - AUDITORIA AMED', header_fmt)
+        # --- 1. CABEÇALHO GERAL ---
+        sheet_dash.merge_range('B2:F3', 'PAINEL EXECUTIVO - AUDITORIA AMED', header_style)
 
-        # 2. CÁLCULOS
+        # --- 2. CÁLCULO DE KPIS ---
+        # Garante que estamos somando números e não strings
+        val_amed = pd.to_numeric(df['$ VALOR - AMED'], errors='coerce').sum()
         total_regs = len(df)
-        ok = len(df[df['RESULTADO_OPERACIONAL'].str.contains('OK', na=False)])
-        pend = len(df[df['RESULTADO_OPERACIONAL'].str.contains('PENDENTE', na=False)])
-        div = len(df[df['RESULTADO_OPERACIONAL'].str.contains('DIVERGÊNCIA', na=False)])
-        saldo_financeiro = df['$ VALOR - AMED'].sum()
+        
+        res = df['RESULTADO_OPERACIONAL'].astype(str)
+        ok = len(df[res.str.contains('OK', na=False)])
+        pend = len(df[res.str.contains('PENDENTE', na=False)])
+        div = len(df[res.str.contains('DIVERGÊNCIA', na=False)])
 
-        # 3. CARDS
-        metrics = [
-            ("TOTAL REGISTROS", total_regs, 1, card_val_fmt),
-            ("CONFORMADOS (OK)", ok, 2, card_val_fmt),
-            ("PENDENTES", pend, 3, card_val_fmt),
-            ("DIVERGÊNCIAS", div, 4, card_val_fmt),
-            ("SALDO AMED", saldo_financeiro, 5, card_money_fmt)
+        # --- 3. CARDS DE INDICADORES ---
+        # Layout: Label na linha 5, Valor na linha 6
+        kpis = [
+            ("TOTAL REGISTROS", total_regs, 1, card_value_style),
+            ("CONFORMIDADE (OK)", ok, 2, card_value_style),
+            ("PENDÊNCIAS", pend, 3, card_value_style),
+            ("DIVERGÊNCIAS", div, 4, card_value_style),
+            ("SALDO FINANCEIRO", val_amed, 5, money_style)
         ]
 
-        for label, val, col, fmt in metrics:
-            sheet_dash.write(3, col, label, card_label_fmt)
-            sheet_dash.write(4, col, val, fmt)
+        for label, val, col, fmt in kpis:
+            sheet_dash.write(5, col, label, card_title_style)
+            sheet_dash.write(6, col, val, fmt)
 
-        # 4. TABELA ALIADOS
-        sheet_dash.write('B7', 'SALDO AMED POR ALIADO', workbook.add_format({'bold': True}))
-        resumo = df.groupby('Aliado')['$ VALOR - AMED'].sum().reset_index().sort_values('$ VALOR - AMED', ascending=False)
+        # --- 4. TABELA: SALDO POR ALIADO ---
+        sheet_dash.write('B9', 'VISÃO FINANCEIRA POR ALIADO', workbook.add_format({'bold': True, 'font_size': 12}))
         
-        row_idx = 8
-        sheet_dash.write(row_idx, 1, 'ALIADO', aliado_header_fmt)
-        sheet_dash.write(row_idx, 2, 'TOTAL VALOR', aliado_header_fmt)
-        
-        for i, row in resumo.iterrows():
-            sheet_dash.write(row_idx + 1 + i, 1, row['Aliado'], workbook.add_format({'border': 1}))
-            sheet_dash.write(row_idx + 1 + i, 2, row['$ VALOR - AMED'], workbook.add_format({'border': 1, 'num_format': 'R$ #,##0.00'}))
+        # Agrupamento seguro
+        df['$ VALOR - AMED'] = pd.to_numeric(df['$ VALOR - AMED'], errors='coerce').fillna(0)
+        resumo = df.groupby('Aliado')['$ VALOR - AMED'].sum().reset_index()
+        resumo = resumo.sort_values(by='$ VALOR - AMED', ascending=False)
 
-        # 5. AJUSTES
+        # Cabeçalho da tabela
+        start_row = 10
+        sheet_dash.write(start_row, 1, 'ALIADO / PARCEIRO', table_header)
+        sheet_dash.write(start_row, 2, 'SALDO ACUMULADO (R$)', table_header)
+
+        # Corpo da tabela
+        for i, r in resumo.iterrows():
+            curr = start_row + 1 + i
+            sheet_dash.write(curr, 1, r['Aliado'], table_row)
+            sheet_dash.write(curr, 2, r['$ VALOR - AMED'], table_money)
+
+        # Ajuste de colunas
         sheet_dash.set_column('B:B', 40)
         sheet_dash.set_column('C:F', 20)
-        sheet_data.freeze_panes(1, 0)
         sheet_dash.hide_gridlines(2)
+
+        # --- 5. FORMATAÇÃO DA ABA DE DADOS ---
+        # Congela cabeçalho
+        sheet_data.freeze_panes(1, 0)
+        
+        # Formatação Condicional
+        col_res_idx = df.columns.get_loc('RESULTADO_OPERACIONAL')
+        letra_res = chr(65 + col_res_idx) if col_res_idx < 26 else f"A{chr(65 + (col_res_idx - 26))}"
+        
+        bg_green = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
+        bg_yellow = workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C6500'})
+        bg_red = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+
+        rng = (1, 0, 100000, len(df.columns)-1)
+        
+        sheet_data.conditional_format(*rng, {'type': 'formula', 'criteria': f'=SEARCH("OK", ${letra_res}2)', 'format': bg_green})
+        sheet_data.conditional_format(*rng, {'type': 'formula', 'criteria': f'=SEARCH("PENDENTE", ${letra_res}2)', 'format': bg_yellow})
+        sheet_data.conditional_format(*rng, {'type': 'formula', 'criteria': f'=SEARCH("DIVERGÊNCIA", ${letra_res}2)', 'format': bg_red})
