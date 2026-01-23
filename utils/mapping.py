@@ -21,14 +21,15 @@ MAPEAMENTO_FRENTE = {
 }
 
 # 2. CONTRATOS DE COLUNAS (Schema Enforcement)
-COLUNAS_PADRAO_MB51 = ['Centro', 'Material', 'Quantidade', 'Tipo de movimento']
-COLUNAS_PADRAO_MB52 = ['Centro', 'Material', 'Utilização livre']
-COLUNAS_PADRAO_ALDREI = ['SKU', 'ID', 'UF', 'OBRA', 'FRENTE_ID', 'Aliado']
+COLUNAS_PADRAO_MB52 = ['Centro', 'Material', 'Utilização livre', 'Depósito', 'Val.utiliz.livre']
+COLUNAS_PADRAO_ALDREI = ['SKU', 'ID', 'UF', 'OBRA', 'FRENTE_ID', 'Aliado', 'APL x DRAFT', 'APL x MEDIÇÃO']
+COLUNAS_PADRAO_CENTROS = ['ID', 'Cen.']
 
-# 3. COLUNAS OBRIGATÓRIAS DE SAÍDA
+# 3. COLUNAS OBRIGATÓRIAS NA SAÍDA
 COLUNAS_SAIDA_AUDITORIA = [
-    'STATUS_AUD', 'AÇÃO_AUD', 'SUGESTÃO_AUD', 'RESULTADO_OPERACIONAL'
+    'STATUS_AUD', 'AÇÃO_AUD', 'SUGESTÃO_AUD', 'RESULTADO_OPERACIONAL',
+    'CENTRO', 'QTDE LVUT', 'QTDE EXEC', 'QTDE AMED', '$ VALOR - AMED', 'POSSUI SALDO'
 ]
 
-# 4. CONFIGURAÇÕES DE LAYOUT
-OFFSET_DASHBOARD = 8
+# Como o Dash mudou de aba, os dados na aba de auditoria agora podem começar da linha 0
+OFFSET_DASHBOARD = 0

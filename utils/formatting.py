@@ -1,90 +1,58 @@
+# utils/formatting.py
 import pandas as pd
-from utils.mapping import OFFSET_DASHBOARD
 
 class ExcelFormatter:
     @staticmethod
-    def aplicar_formato(writer, aba1, aba2):
+    def aplicar_formato(writer, df):
         workbook = writer.book
-        # Acessando as abas
-        sheet1 = writer.sheets['analise MB']
-        sheet2 = writer.sheets['analise auditoria']
+        sheet_dash = workbook.add_worksheet('Painel')
+        sheet_data = writer.sheets['analise auditoria']
+        sheet_dash.activate()
 
-        # 1. GARANTIA DE CONTRATO
-        if 'RESULTADO_OPERACIONAL' not in aba2.columns:
-            aba2['RESULTADO_OPERACIONAL'] = "N/A"
+        # Estilos
+        header_fmt = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': '#FFFFFF', 'bg_color': '#1F4E78', 'align': 'center'})
+        card_label_fmt = workbook.add_format({'bold': True, 'font_size': 11, 'bg_color': '#D9E1F2', 'border': 1, 'align': 'center'})
+        card_val_fmt = workbook.add_format({'bold': True, 'font_size': 14, 'border': 1, 'align': 'center', 'font_color': '#1F4E78'})
+        card_money_fmt = workbook.add_format({'bold': True, 'font_size': 12, 'border': 1, 'align': 'center', 'font_color': '#006100', 'num_format': 'R$ #,##0.00'})
+        aliado_header_fmt = workbook.add_format({'bold': True, 'bg_color': '#EAEAEA', 'border': 1, 'align': 'center'})
 
-        # 2. DEFINIÇÃO DE ESTILOS PROFISSIONAIS
-        title_fmt = workbook.add_format({'bold': True, 'font_size': 14, 'font_color': '#1F4E78', 'valign': 'vcenter'})
-        metric_name_fmt = workbook.add_format({'bg_color': '#F2F2F2', 'border': 1, 'bold': True})
-        metric_val_fmt = workbook.add_format({'bold': True, 'align': 'center', 'border': 1, 'font_color': '#1F4E78'})
-        
-        # Estilos para Formatação Condicional
-        red_fmt = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
-        green_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
-        yellow_fmt = workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C6500'})
-        header_table_fmt = workbook.add_format({'bold': True, 'bg_color': '#1F4E78', 'font_color': 'white', 'border': 1})
+        # 1. TÍTULO
+        sheet_dash.merge_range('B2:F2', 'PAINEL DE INDICADORES - AUDITORIA AMED', header_fmt)
 
-        # 3. CONSTRUÇÃO DO DASHBOARD (Preenchendo as linhas vazias)
-        sheet2.write('A1', 'RESUMO EXECUTIVO DE AUDITORIA AMED', title_fmt)
-        
-        # Cálculos Defensivos
-        series_res = aba2['RESULTADO_OPERACIONAL'].astype(str)
-        total_skus = len(aba2)
-        ok_count = len(aba2[series_res.str.contains('OK', na=False)])
-        pendente_count = len(aba2[series_res.str.contains('PENDENTE', na=False)])
-        divergente_count = len(aba2[series_res.str.contains('DIVERGÊNCIA|ESTORNO', na=False)])
+        # 2. CÁLCULOS
+        total_regs = len(df)
+        ok = len(df[df['RESULTADO_OPERACIONAL'].str.contains('OK', na=False)])
+        pend = len(df[df['RESULTADO_OPERACIONAL'].str.contains('PENDENTE', na=False)])
+        div = len(df[df['RESULTADO_OPERACIONAL'].str.contains('DIVERGÊNCIA', na=False)])
+        saldo_financeiro = df['$ VALOR - AMED'].sum()
 
+        # 3. CARDS
         metrics = [
-            ('Total de Registros Auditados', total_skus),
-            ('Aplicações Conformadas (OK)', ok_count),
-            ('Pendências / Ação de Campo', pendente_count),
-            ('Divergências / Erros de Saldo', divergente_count)
+            ("TOTAL REGISTROS", total_regs, 1, card_val_fmt),
+            ("CONFORMADOS (OK)", ok, 2, card_val_fmt),
+            ("PENDENTES", pend, 3, card_val_fmt),
+            ("DIVERGÊNCIAS", div, 4, card_val_fmt),
+            ("SALDO AMED", saldo_financeiro, 5, card_money_fmt)
         ]
 
-        # Escrevendo as métricas no topo (Linhas 3 a 6)
-        for i, (name, val) in enumerate(metrics):
-            sheet2.write(i + 2, 0, name, metric_name_fmt)
-            sheet2.write(i + 2, 1, val, metric_val_fmt)
+        for label, val, col, fmt in metrics:
+            sheet_dash.write(3, col, label, card_label_fmt)
+            sheet_dash.write(4, col, val, fmt)
 
-        # 4. FORMATAÇÃO DINÂMICA DA TABELA DE DADOS
-        # Localiza a letra da coluna RESULTADO_OPERACIONAL
-        col_idx = aba2.columns.get_loc('RESULTADO_OPERACIONAL')
-        col_letter = chr(65 + col_idx) if col_idx < 26 else f"A{chr(65 + (col_idx - 26))}"
+        # 4. TABELA ALIADOS
+        sheet_dash.write('B7', 'SALDO AMED POR ALIADO', workbook.add_format({'bold': True}))
+        resumo = df.groupby('Aliado')['$ VALOR - AMED'].sum().reset_index().sort_values('$ VALOR - AMED', ascending=False)
         
-        # Range que começa após o OFFSET
-        range_dados = (OFFSET_DASHBOARD, 0, 100000, len(aba2.columns) - 1)
+        row_idx = 8
+        sheet_dash.write(row_idx, 1, 'ALIADO', aliado_header_fmt)
+        sheet_dash.write(row_idx, 2, 'TOTAL VALOR', aliado_header_fmt)
+        
+        for i, row in resumo.iterrows():
+            sheet_dash.write(row_idx + 1 + i, 1, row['Aliado'], workbook.add_format({'border': 1}))
+            sheet_dash.write(row_idx + 1 + i, 2, row['$ VALOR - AMED'], workbook.add_format({'border': 1, 'num_format': 'R$ #,##0.00'}))
 
-        # Aplicando Cores nas Linhas conforme o Status
-        formatos = [
-            ("PENDENTE", yellow_fmt),
-            ("DIVERGÊNCIA", red_fmt),
-            ("ESTORNO", red_fmt),
-            ("OK", green_fmt)
-        ]
-
-        for crit, fmt in formatos:
-            sheet2.conditional_format(*range_dados, {
-                'type': 'formula',
-                'criteria': f'=SEARCH("{crit}", ${col_letter}{OFFSET_DASHBOARD+1})',
-                'format': fmt
-            })
-
-        # 5. PERFUMARIA E UX (O toque final)
-        
-        # Congelar Dashboard e Cabeçalho (Fica fixo ao rolar)
-        sheet2.freeze_panes(OFFSET_DASHBOARD + 1, 0)
-        
-        # Ajuste de largura das colunas para leitura clara
-        sheet2.set_column('A:A', 25)  # SKU / Primeiro campo
-        sheet2.set_column('B:H', 18)  # Campos intermediários
-        sheet2.set_column(col_idx, col_idx, 35)  # Coluna de Resultado (Mais larga)
-        
-        # Ativa o filtro automático na linha do cabeçalho
-        sheet2.autofilter(OFFSET_DASHBOARD, 0, OFFSET_DASHBOARD + len(aba2), len(aba2.columns) - 1)
-        
-        # Limpa as linhas de grade para um visual "Clean"
-        sheet2.hide_gridlines(2)
-
-        # Formatação de cabeçalho da tabela de dados (Linha do OFFSET)
-        for col_num, value in enumerate(aba2.columns.values):
-            sheet2.write(OFFSET_DASHBOARD, col_num, value, header_table_fmt)
+        # 5. AJUSTES
+        sheet_dash.set_column('B:B', 40)
+        sheet_dash.set_column('C:F', 20)
+        sheet_data.freeze_panes(1, 0)
+        sheet_dash.hide_gridlines(2)
