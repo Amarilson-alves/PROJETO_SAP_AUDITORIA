@@ -1,0 +1,37 @@
+# --- CONFIGURAÇÃO DO ROBÔ DE AUDITORIA ---
+
+arquivos:
+  mb52: "data/MB52.xlsx"
+  mb51: "data/MB51.xlsx"
+  centros: "data/Centro.xlsx"
+  aldrei: "data/Aldrei.xlsx"
+
+indices_fixos:
+  # Baseado na sua validação anterior (K=10, D=3)
+  centro_col_id: 10
+  centro_col_nome: 3
+
+movimentos_baixa:
+  # Lista de movimentos que indicam "Aplicação" no SAP
+  - "221" # Consumo para projeto
+  - "281" # Consumo para rede
+  - "261" # Consumo para ordem
+  - "Z21" # Movimentos customizados (Exemplo)
+
+layout_saida:
+  offset_dashboard: 0
+  colunas_finais:
+    - "STATUS"
+    - "AÇÃO"
+    - "SUGESTÃO"
+    - "RESULTADO_OPERACIONAL"
+    - "VALIDAÇÃO CONTÁBIL"  # NOVA COLUNA
+    - "CENTRO"
+    - "QTDE LVUT"
+    - "QTDE EXEC"
+    - "QTDE AMED"
+    - "$ VALOR - AMED"
+    - "POSSUI SALDO"
+    - "QTDE APLICAR"
+    - "$ VALOR UNIT"
+    - "$ SALDO X QTDE"

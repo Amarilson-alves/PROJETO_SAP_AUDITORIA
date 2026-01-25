@@ -1,17 +1,12 @@
-# --- BIBLIOTECAS BASE ---
-pandas==2.1.4
+# --- MOTOR PRINCIPAL ---
+pandas>=2.2.0
 numpy>=1.26.0
-
-# --- MOTORES DE LEITURA (EXCEL) ---
-# Calamine é o motor ultra-rápido que estamos usando no sap_reader
-python-calamine==0.2.0
-# Openpyxl é o motor padrão para arquivos .xlsx
-openpyxl==3.1.2
-
-# --- MOTOR DE EXPORTAÇÃO E FORMATAÇÃO ---
-# Responsável pelo dashboard, cores e congelamento de painéis
-XlsxWriter==3.1.9
-
-# --- UTILITÁRIOS ---
-# Para gerenciar variáveis de ambiente e configurações futuras
+XlsxWriter>=3.2.0
+python-calamine>=0.2.0
+openpyxl>=3.1.2
+PyYAML>=6.0.1
 python-dotenv==1.0.0
+
+# --- QUALIDADE E TESTES (NOVOS) ---
+pytest>=8.0.0        # Para rodar os testes
+pandera>=0.18.0      # Para validar colunas do Excel
