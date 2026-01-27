@@ -48,15 +48,17 @@ def processar_tudo():
         resultado = audit.processar_auditoria(df_ald, mapa_centros, mapa_mb52, mapa_mb51)
 
         # 3. Exportação Principal (Resultado)
-        saida_res = 'output/Resultado_Auditoria_PRO.xlsx'
+        saida_res = config['saidas']['dashboard']
+        
+        log.info(f"📊 Gerando Dashboard em: {saida_res}")
         with pd.ExcelWriter(saida_res, engine='xlsxwriter') as writer:
             resultado.to_excel(writer, sheet_name='analise auditoria', index=False)
             ExcelFormatter.aplicar_formato(writer, resultado)
 
         # 4. Exportação Secundária (Evidências / Lineage)
-        saida_evi = 'output/EVIDENCIAS_DETALHADAS_MB52.csv'
-        log.info(f"💾 Salvando Rastreabilidade em CSV...")
-        # Salvamos em CSV para ser leve e abrir rápido
+        saida_evi = config['saidas']['evidencias']
+        
+        log.info(f"💾 Salvando Rastreabilidade em: {saida_evi}")
         df_evidencias.to_csv(saida_evi, index=False, sep=';', decimal=',')
 
         log.info("✅ PROCESSO CONCLUÍDO COM SUCESSO!")

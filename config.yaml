@@ -1,22 +1,27 @@
 # --- CONFIGURAÇÃO DO ROBÔ DE AUDITORIA ---
 
+# 1. ARQUIVOS DE ENTRADA (Mude aqui se o nome do arquivo mudar)
 arquivos:
   mb52: "data/MB52.xlsx"
   mb51: "data/MB51.xlsx"
   centros: "data/Centro.xlsx"
   aldrei: "data/Aldrei.xlsx"
 
+# 2. ARQUIVOS DE SAÍDA (O que você pediu para mudar)
+saidas:
+  dashboard: "output/analise_completa.xlsx"  # Nome do Excel Final
+  evidencias: "output/Extrato_Rastreabilidade_MB52.csv"  # Nome do CSV de Prova
+
+# 3. REGRAS DE LEITURA
 indices_fixos:
-  # Baseado na sua validação anterior (K=10, D=3)
   centro_col_id: 10
   centro_col_nome: 3
 
 movimentos_baixa:
-  # Lista de movimentos que indicam "Aplicação" no SAP
   - "221" # Consumo para projeto
   - "281" # Consumo para rede
   - "261" # Consumo para ordem
-  - "Z21" # Movimentos customizados (Exemplo)
+  - "Z21" # Movimentos customizados
 
 layout_saida:
   offset_dashboard: 0
@@ -25,7 +30,7 @@ layout_saida:
     - "AÇÃO"
     - "SUGESTÃO"
     - "RESULTADO_OPERACIONAL"
-    - "VALIDAÇÃO CONTÁBIL"  # NOVA COLUNA
+    - "VALIDAÇÃO CONTÁBIL"
     - "CENTRO"
     - "QTDE LVUT"
     - "QTDE EXEC"

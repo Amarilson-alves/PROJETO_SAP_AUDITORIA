@@ -1,5 +1,5 @@
 # core/schemas.py
-import pandera as pa
+import pandera.pandas as pa
 from pandera import Column
 
 # Contrato da Planilha ALDREI
