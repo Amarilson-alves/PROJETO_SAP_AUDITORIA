@@ -1,17 +1,22 @@
 # core/schemas.py
 import pandera as pa
-from pandera import Column, Check
+from pandera import Column
 
-# Contrato: O arquivo Aldrei OBRIGATORIAMENTE tem que ter essas colunas
+# Contrato da Planilha ALDREI
 SchemaAldrei = pa.DataFrameSchema({
-    "SKU": Column(str, coerce=True), # Tem que ser texto
+    "SKU": Column(str, coerce=True), 
     "ID": Column(str, coerce=True),
-    "Aliado": Column(str),
-    "APL x DRAFT": Column(float, required=False, coerce=True), # Pode não existir, mas se existir é número
-    "APL x MEDIÇÃO": Column(float, required=False, coerce=True),
+    "Aliado": Column(str, required=False, nullable=True), # Pode vir vazio
+    "UF": Column(str, required=False, nullable=True),     # Pode vir vazio
+    
+    # AQUI ESTAVA O BLOQUEIO: Adicionei nullable=True
+    # Isso diz: "Se a coluna existir, tem que ser número. Mas aceito células vazias."
+    "APL x DRAFT": Column(float, required=False, coerce=True, nullable=True), 
+    "APL x MEDIÇÃO": Column(float, required=False, coerce=True, nullable=True),
 })
 
-# Contrato: O arquivo MB52 tem que ter valores positivos ou zero nas qtds (exemplo)
+# Contrato da Planilha MB52
 SchemaMB52 = pa.DataFrameSchema({
-    "Utilização livre": Column(float, Check.greater_than_or_equal_to(0), coerce=True),
+    "Material": Column(str, required=False),
+    "Centro": Column(str, required=False),
 })
