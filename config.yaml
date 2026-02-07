@@ -6,6 +6,7 @@ arquivos:
   mb51: "data/MB51.xlsx"
   centros: "data/Centro.xlsx"
   aldrei: "data/Aldrei.xlsx"
+  dim_movimentos: "data/dim_movimentos.csv"
 
 # 2. ARQUIVOS DE SAÍDA (O que você pediu para mudar)
 saidas:
@@ -16,12 +17,6 @@ saidas:
 indices_fixos:
   centro_col_id: 10
   centro_col_nome: 3
-
-movimentos_baixa:
-  - "221" # Consumo para projeto
-  - "281" # Consumo para rede
-  - "261" # Consumo para ordem
-  - "Z21" # Movimentos customizados
 
 layout_saida:
   offset_dashboard: 0
