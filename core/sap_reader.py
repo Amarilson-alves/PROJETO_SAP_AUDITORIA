@@ -8,6 +8,7 @@ from datetime import datetime
 class SAPReader:
     def __init__(self, config):
         self.config = config
+        self.cols_cfg = config.get('colunas_sap', {}) # Carrega dicionário do YAML
 
     @staticmethod
     def normalize_str(s):
@@ -27,6 +28,19 @@ class SAPReader:
             if ',' in texto: texto = texto.replace('.', '').replace(',', '.')
             return float(texto) * multi
         except: return 0.0
+
+    # Função Auxiliar para pegar colunas dinamicamente
+    def _get_col_name(self, df, chave_config):
+        padroes = self.cols_cfg.get(chave_config, [])
+        # Fallback se não tiver no config (hardcode minimo de segurança)
+        if not padroes:
+            if chave_config == 'recebedor': padroes = ['RECEBEDOR', 'RECEP.', 'WEMPF']
+            else: return None
+        
+        for pat in padroes:
+            found = next((c for c in df.columns if pat.upper() in str(c).upper()), None)
+            if found: return found
+        return None
 
     # --- LEITURA BÁSICA ---
     def carregar_mapa_mb52(self):
@@ -91,14 +105,8 @@ class SAPReader:
 
         df = pd.read_excel(caminho_mb51, engine='calamine')
 
-        def get_col(patterns):
-            for pat in patterns:
-                found = next((c for c in df.columns if pat.upper() in str(c).upper()), None)
-                if found: return found
-            return None
-
-        col_rec = get_col(['RECEBEDOR', 'RECEP.', 'WEMPF']) 
-        col_cen = get_col(['CENTRO', 'WERKS'])
+        col_rec = self._get_col_name(df, 'recebedor')
+        col_cen = self._get_col_name(df, 'centro')
 
         if not col_rec or not col_cen: return {}
 
@@ -110,7 +118,7 @@ class SAPReader:
         return mapa
 
     # ---------------------------------------------------------
-    # 🕵️‍♂️ AUDITORIA CONTÍNUA (RAIO-X)
+    # 🕵️‍♂️ AUDITORIA CONTÍNUA (ENTERPRISE v17)
     # ---------------------------------------------------------
     def gerar_raio_x_amed(self, mapa_mb52_referencia):
         caminho_mb51 = self.config['arquivos']['mb51']
@@ -120,33 +128,33 @@ class SAPReader:
 
         print("   ☢️ Iniciando Motor de Auditoria Contínua...")
         
+        # 1. Trava de Segurança CSV
         df_dim = pd.read_csv(caminho_dim, sep=';', dtype=str)
+        if df_dim['BWART'].duplicated().any():
+            duplicados = df_dim[df_dim['BWART'].duplicated()]['BWART'].tolist()
+            raise ValueError(f"❌ ERRO CRÍTICO: Movimentos duplicados no CSV: {duplicados}. Corrija o arquivo dim_movimentos.csv!")
+
         df_dim['BWART'] = df_dim['BWART'].str.strip()
         if 'TIPO_ESPECIAL' not in df_dim.columns: df_dim['TIPO_ESPECIAL'] = 'PADRAO'
         lista_saida = df_dim[df_dim['SENTIDO_AMED'] == 'SAIDA']['BWART'].unique()
         
+        # 2. Leitura Dinâmica (Via Config)
         df = pd.read_excel(caminho_mb51, engine='calamine')
 
-        def get_col(patterns):
-            for pat in patterns:
-                found = next((c for c in df.columns if pat.upper() in str(c).upper()), None)
-                if found: return found
-            return None
-
-        col_centro = get_col(['CENTRO', 'WERKS'])           
-        col_dep = get_col(['DEPÓSITO', 'DEPOSITO', 'LGORT']) 
-        col_mat = get_col(['MATERIAL', 'MAT.'])             
-        col_desc = get_col(['TEXTO BREVE', 'DESCRIÇÃO'])    
-        col_qtd = get_col(['QUANTIDADE', 'QTD'])            
-        col_data = get_col(['DATA DE LANÇAMENTO', 'DATA LANC.', 'BUDAT']) 
-        col_mov = get_col(['MOVIMENTO', 'BWART'])           
-        col_rec = get_col(['RECEBEDOR', 'RECEP.', 'WEMPF']) 
-        col_val = get_col(['MONTANTE', 'VALOR', 'DMBTR'])   
-        col_doc = get_col(['DOC.MATERIAL', 'DOCUMENTO'])    
-        col_item = get_col(['ITEM', 'ITEM DO DOCUMENTO']) 
-        col_nome1 = get_col(['NOME 1', 'NOME1'])            
-        col_user = get_col(['USUÁRIO', 'USUARIO', 'USNAM']) 
-        col_lote = get_col(['LOTE', 'CHARG']) 
+        col_centro = self._get_col_name(df, 'centro')
+        col_dep = self._get_col_name(df, 'deposito')
+        col_mat = self._get_col_name(df, 'material')
+        col_desc = self._get_col_name(df, 'descricao')
+        col_qtd = self._get_col_name(df, 'quantidade')
+        col_val = self._get_col_name(df, 'valor')
+        col_data = self._get_col_name(df, 'data_lanc')
+        col_mov = self._get_col_name(df, 'movimento')
+        col_rec = self._get_col_name(df, 'recebedor')
+        col_doc = self._get_col_name(df, 'documento')
+        col_item = self._get_col_name(df, 'item')
+        col_user = self._get_col_name(df, 'usuario')
+        col_lote = self._get_col_name(df, 'lote')
+        col_nome1 = self._get_col_name(df, 'nome1')
 
         if col_data: df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
         
@@ -170,6 +178,10 @@ class SAPReader:
         grupos = df_proc.groupby(['ID_LIMPO', col_mat, col_centro, col_dep, 'LOTE_LIMPO'])
         analise = []
         hoje = datetime.now()
+        
+        # Contadores de Limpeza
+        count_ignored = 0
+        count_processed = 0
 
         print(f"   📊 Processando {len(grupos)} pilhas de estoque...")
 
@@ -216,7 +228,12 @@ class SAPReader:
             saldo_mb52 = mapa_mb52_referencia.get(chave_mb52, {}).get('qtd', 0)
             tem_divergencia = (saldo_reconstruido > 0.1 and saldo_mb52 < 0.01)
 
-            if saldo_reconstruido < 0.001 and id_dono != 'SEM_ID' and not doc_furo and not tem_divergencia: continue
+            # Filtro de Limpeza
+            if saldo_reconstruido < 0.001 and id_dono != 'SEM_ID' and not doc_furo and not tem_divergencia:
+                count_ignored += 1
+                continue
+            
+            count_processed += 1
 
             if pilha_estoque:
                 sobra_ref = pilha_estoque[0] 
@@ -240,8 +257,6 @@ class SAPReader:
             acao = "Monitorar"
             log_detalhe = []
 
-            # --- AQUI ESTAVA O ERRO (CORRIGIDO) ---
-            # Defino a data formatada para usar no dicionário final
             dt_fmt = dt_entrada.strftime('%d/%m/%Y') if pd.notnull(dt_entrada) else "-"
 
             if tem_divergencia:
@@ -304,4 +319,7 @@ class SAPReader:
 
             analise.append({'SCORE_RISCO': score_risco, 'STATUS': status_final, 'TIPO_AÇÃO': tipo_acao, 'CAUSA_RAIZ': causa, 'AÇÃO_SUGERIDA': acao, 'RESPONSÁVEL_ATUAL': responsavel_atual, 'LOG_AUDITORIA': log_final, 'FRENTE': frente, 'ID_RECEBEDOR': id_dono, 'NOME_PARCEIRO': nome_empresa, 'MATERIAL': material, 'DESCRIÇÃO': desc_material, 'CENTRO': centro, 'DEPÓSITO': deposito, 'LOTE': lote, 'SALDO_RECONSTRUÍDO': saldo_reconstruido, 'SALDO_MB52_REF': saldo_mb52, 'VALOR_REAL': valor_real_parado, 'AGING_DIAS': aging, 'DT_REF_AGING': dt_fmt, 'DOC_ORIGEM': f"{mov_entrada}-{doc_entrada}", 'RESPONSÁVEL_MOV': user_entrada})
 
+        print(f"   🧹 Limpeza de Dados: {count_ignored} pilhas com saldo zero e sem pendências foram ocultadas.")
+        print(f"   📋 Total Reportado: {count_processed} registros.")
+        
         return pd.DataFrame(analise)

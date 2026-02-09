@@ -4,6 +4,7 @@ import sys
 import time
 import pandas as pd
 import pandera.pandas as pa
+from datetime import datetime
 from core.schemas import SchemaAldrei
 from utils.settings import carregar_config
 from core.sap_reader import SAPReader
@@ -16,7 +17,7 @@ def processar_tudo():
     for p in ['data', 'output', 'logs']:
         if not os.path.exists(p): os.makedirs(p)
         
-    log.info("🚀 INICIANDO AUDITORIA AMED v16.0 (FINAL FIX)")
+    log.info("🚀 INICIANDO AUDITORIA AMED v17.0 (ENTERPRISE HARDENED)")
 
     try:
         config = carregar_config()
@@ -35,38 +36,59 @@ def processar_tudo():
         try: SchemaAldrei.validate(df_ald)
         except pa.errors.SchemaError as err: log.error(f"❌ ERRO VALIDAÇÃO: {err}"); return
 
-        # --- GERA O MAPA GEOGRÁFICO ---
         log.info("🌍 Mapeando Centros por ID (MB51)...")
         mapa_geo = reader.gerar_mapa_centros_por_id()
 
-        # --- AUDITORIA CRUZADA (Sem Validação Contábil) ---
         log.info("⚙️ Processando Auditoria Cruzada...")
         resultado = audit.processar_auditoria(df_ald, mapa_centros, mapa_mb52, mapa_geo)
 
-        # --- AUDITORIA CONTÍNUA ---
         log.info("☢️ Executando Motor de Auditoria Contínua...")
         df_raiox = reader.gerar_raio_x_amed(mapa_mb52) 
+
+        # --- GERAÇÃO DE METADADOS (RASTREABILIDADE) ---
+        df_meta = pd.DataFrame({
+            'CHAVE': ['DATA_EXECUCAO', 'VERSAO_ROBO', 'ARQUIVO_CONFIG', 'ARQUIVO_REGRAS'],
+            'VALOR': [
+                datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
+                'v17.0 (Enterprise)',
+                'config.yaml',
+                'dim_movimentos.csv'
+            ]
+        })
 
         log.info(f"📊 Gerando Relatório Final: {config['saidas']['dashboard']}")
         sucesso = False; tentativas = 0
         while not sucesso and tentativas < 1:
             try:
                 with pd.ExcelWriter(config['saidas']['dashboard'], engine='xlsxwriter') as writer:
+                    
+                    # 1. Metadados (Aba Técnica)
+                    df_meta.to_excel(writer, sheet_name='INFO_EXECUCAO', index=False)
+                    
+                    # 2. Auditoria Padrão
                     resultado.to_excel(writer, sheet_name='analise auditoria', index=False)
+                    # Mantém formatação básica de dados (cabeçalho, largura), sem ícones
                     try: ExcelFormatter.aplicar_formato(writer, resultado)
                     except: pass
                     
+                    # 3. Raio-X
                     if not df_raiox.empty:
                         df_raiox.sort_values(by=['SCORE_RISCO', 'VALOR_REAL'], ascending=[False, False], inplace=True)
                         sheet_raiox = 'RAIO_X_AMED'
                         df_raiox.to_excel(writer, sheet_name=sheet_raiox, index=False)
+                        
+                        # Formatação Apenas de Tipos de Dados (Para Power Query)
                         wb = writer.book; ws = writer.sheets[sheet_raiox]
                         fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
                         fmt_num = wb.add_format({'num_format': '0'})
-                        fmt_wrap = wb.add_format({'text_wrap': True})
-                        ws.conditional_format('A2:A500000', {'type': 'data_bar', 'bar_color': '#FF6347', 'min_value': 0, 'max_value': 100})
-                        ws.set_column('A:A', 12); ws.set_column('B:B', 30); ws.set_column('G:G', 60, fmt_wrap)
-                        ws.set_column('P:P', 12, fmt_num); ws.set_column('Q:Q', 12, fmt_num); ws.set_column('R:R', 18, fmt_money); ws.set_column('S:S', 10, fmt_num)
+                        
+                        # Colunas de Valores e Números
+                        ws.set_column('A:A', 12) # Score
+                        ws.set_column('P:P', 12, fmt_num)
+                        ws.set_column('Q:Q', 12, fmt_num)
+                        ws.set_column('R:R', 18, fmt_money)
+                        ws.set_column('S:S', 10, fmt_num)
+
                 sucesso = True
             except PermissionError:
                 log.error("🚫 ARQUIVO ABERTO! Feche o Excel..."); time.sleep(5); tentativas += 1

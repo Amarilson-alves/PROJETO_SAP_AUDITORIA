@@ -1,6 +1,6 @@
 # --- CONFIGURAÇÃO DO ROBÔ DE AUDITORIA ---
 
-# 1. ARQUIVOS DE ENTRADA (Mude aqui se o nome do arquivo mudar)
+# 1. ARQUIVOS DE ENTRADA
 arquivos:
   mb52: "data/MB52.xlsx"
   mb51: "data/MB51.xlsx"
@@ -8,15 +8,32 @@ arquivos:
   aldrei: "data/Aldrei.xlsx"
   dim_movimentos: "data/dim_movimentos.csv"
 
-# 2. ARQUIVOS DE SAÍDA (O que você pediu para mudar)
+# 2. ARQUIVOS DE SAÍDA
 saidas:
-  dashboard: "output/analise_completa.xlsx"  # Nome do Excel Final
-  evidencias: "output/Extrato_Rastreabilidade_MB52.csv"  # Nome do CSV de Prova
+  dashboard: "output/analise_completa.xlsx"
+  evidencias: "output/Extrato_Rastreabilidade_MB52.csv"
 
 # 3. REGRAS DE LEITURA
 indices_fixos:
   centro_col_id: 10
   centro_col_nome: 3
+
+# 4. MAPEAMENTO DE COLUNAS SAP (NOVO - SEM HARDCODE)
+colunas_sap:
+  centro: ["CENTRO", "WERKS"]
+  deposito: ["DEPÓSITO", "DEPOSITO", "LGORT"]
+  material: ["MATERIAL", "MAT."]
+  descricao: ["TEXTO BREVE", "DESCRIÇÃO"]
+  quantidade: ["QUANTIDADE", "QTD"]
+  valor: ["MONTANTE", "VALOR", "DMBTR"]
+  movimento: ["MOVIMENTO", "BWART"]
+  recebedor: ["RECEBEDOR", "RECEP.", "WEMPF", "DESTINATÁRIO"] # Adicione novos aqui se precisar
+  data_lanc: ["DATA DE LANÇAMENTO", "DATA LANC.", "BUDAT"]
+  documento: ["DOC.MATERIAL", "DOCUMENTO"]
+  item: ["ITEM", "ITEM DO DOCUMENTO", "ZEILE"]
+  usuario: ["USUÁRIO", "USUARIO", "USNAM"]
+  lote: ["LOTE", "CHARG"]
+  nome1: ["NOME 1", "NOME1"]
 
 layout_saida:
   offset_dashboard: 0
@@ -25,7 +42,7 @@ layout_saida:
     - "AÇÃO"
     - "SUGESTÃO"
     - "RESULTADO_OPERACIONAL"
-    - "VALIDAÇÃO CONTÁBIL"
+    - "VALIDAÇÃO CONTÁBIL" # Se ainda quiser manter no config, ok, mas o código ignora.
     - "CENTRO"
     - "QTDE LVUT"
     - "QTDE EXEC"
