@@ -16,104 +16,65 @@ def processar_tudo():
     for p in ['data', 'output', 'logs']:
         if not os.path.exists(p): os.makedirs(p)
         
-    log.info("🚀 INICIANDO AUDITORIA AMED v13.1 (FIX VISUAL)")
+    log.info("🚀 INICIANDO AUDITORIA AMED v16.0 (FINAL FIX)")
 
     try:
         config = carregar_config()
         reader = SAPReader(config)
         audit = AuditoriaAMED(config)
 
-        # 1. Carregar Dados
         log.info("📥 Carregando Bases de Dados...")
         try:
             mapa_mb52, df_evidencias = reader.carregar_mapa_mb52()
             mapa_centros = reader.carregar_mapa_centros()
             df_ald = reader.carregar_aldrei()
         except PermissionError:
-            log.error("❌ ERRO DE PERMISSÃO: Feche os arquivos de entrada antes de rodar!")
-            return
+            log.error("❌ ERRO DE PERMISSÃO: Feche os arquivos de entrada!"); return
 
-        # Validação
         log.info("🛡️ Validando Schema...")
         try: SchemaAldrei.validate(df_ald)
-        except pa.errors.SchemaError as err:
-            log.error(f"❌ ERRO VALIDAÇÃO: {err}"); return
+        except pa.errors.SchemaError as err: log.error(f"❌ ERRO VALIDAÇÃO: {err}"); return
 
-        # 2. Processo 1: Auditoria Cruzada
+        # --- GERA O MAPA GEOGRÁFICO ---
+        log.info("🌍 Mapeando Centros por ID (MB51)...")
+        mapa_geo = reader.gerar_mapa_centros_por_id()
+
+        # --- AUDITORIA CRUZADA (Sem Validação Contábil) ---
         log.info("⚙️ Processando Auditoria Cruzada...")
-        resultado = audit.processar_auditoria(df_ald, mapa_centros, mapa_mb52, {})
+        resultado = audit.processar_auditoria(df_ald, mapa_centros, mapa_mb52, mapa_geo)
 
-        # 3. Processo 2: AUDITORIA CONTÍNUA
+        # --- AUDITORIA CONTÍNUA ---
         log.info("☢️ Executando Motor de Auditoria Contínua...")
         df_raiox = reader.gerar_raio_x_amed(mapa_mb52) 
 
-        # 4. Exportação
-        saida_res = config['saidas']['dashboard']
-        log.info(f"📊 Gerando Relatório Final: {saida_res}")
-        
-        sucesso = False
-        tentativas = 0
+        log.info(f"📊 Gerando Relatório Final: {config['saidas']['dashboard']}")
+        sucesso = False; tentativas = 0
         while not sucesso and tentativas < 1:
             try:
-                with pd.ExcelWriter(saida_res, engine='xlsxwriter') as writer:
-                    
-                    # Aba 1: Auditoria Padrão
+                with pd.ExcelWriter(config['saidas']['dashboard'], engine='xlsxwriter') as writer:
                     resultado.to_excel(writer, sheet_name='analise auditoria', index=False)
                     try: ExcelFormatter.aplicar_formato(writer, resultado)
                     except: pass
                     
-                    # Aba 2: RAIO-X AMED
                     if not df_raiox.empty:
-                        # Ordena por Score
                         df_raiox.sort_values(by=['SCORE_RISCO', 'VALOR_REAL'], ascending=[False, False], inplace=True)
-                        
                         sheet_raiox = 'RAIO_X_AMED'
                         df_raiox.to_excel(writer, sheet_name=sheet_raiox, index=False)
-                        
-                        # --- FORMATAÇÃO VISUAL (MAPA CORRIGIDO) ---
-                        wb = writer.book
-                        ws = writer.sheets[sheet_raiox]
-                        
+                        wb = writer.book; ws = writer.sheets[sheet_raiox]
                         fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
-                        fmt_num   = wb.add_format({'num_format': '0'})
-                        fmt_wrap  = wb.add_format({'text_wrap': True})
-                        
-                        # Coluna A (Score)
-                        ws.conditional_format('A2:A500000', {
-                            'type': 'data_bar', 'bar_color': '#FF6347',
-                            'min_value': 0, 'max_value': 100
-                        })
-                        
-                        # Largura das Colunas de Texto
-                        ws.set_column('A:A', 12)  # Score
-                        ws.set_column('B:B', 30)  # Status
-                        ws.set_column('G:G', 60, fmt_wrap) # Log Auditoria (Agora está na G)
-                        
-                        # === O MAPEAMENTO DO DINHEIRO ===
-                        # Na versão final, a coluna VALOR_REAL caiu na letra R
-                        # A coluna AGING_DIAS caiu na letra S
-                        
-                        ws.set_column('P:P', 12, fmt_num)   # Saldo Reconstruído (Qtd)
-                        ws.set_column('Q:Q', 12, fmt_num)   # Saldo MB52 Ref (Qtd)
-                        
-                        ws.set_column('R:R', 18, fmt_money) # VALOR_REAL -> AGORA SIM EM R$
-                        ws.set_column('S:S', 10, fmt_num)   # AGING -> AGORA SIM NÚMERO
-
+                        fmt_num = wb.add_format({'num_format': '0'})
+                        fmt_wrap = wb.add_format({'text_wrap': True})
+                        ws.conditional_format('A2:A500000', {'type': 'data_bar', 'bar_color': '#FF6347', 'min_value': 0, 'max_value': 100})
+                        ws.set_column('A:A', 12); ws.set_column('B:B', 30); ws.set_column('G:G', 60, fmt_wrap)
+                        ws.set_column('P:P', 12, fmt_num); ws.set_column('Q:Q', 12, fmt_num); ws.set_column('R:R', 18, fmt_money); ws.set_column('S:S', 10, fmt_num)
                 sucesso = True
-            
             except PermissionError:
-                log.error("🚫 ARQUIVO ABERTO! Feche o Excel e aguarde...")
-                time.sleep(5)
-                tentativas += 1
+                log.error("🚫 ARQUIVO ABERTO! Feche o Excel..."); time.sleep(5); tentativas += 1
         
         if not sucesso: return
-
-        # 5. Salva Evidências
-        saida_evi = config['saidas']['evidencias']
-        try: df_evidencias.to_csv(saida_evi, index=False, sep=';', decimal=',')
+        try: df_evidencias.to_csv(config['saidas']['evidencias'], index=False, sep=';', decimal=',')
         except: pass
-
-        log.info("✅ RELATÓRIO FORMATADO CORRETAMENTE!")
+        log.info("✅ RELATÓRIO FINALIZADO COM SUCESSO!")
 
     except Exception as e:
         log.error(f"❌ ERRO CRÍTICO: {str(e)}", exc_info=True)

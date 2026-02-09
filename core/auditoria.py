@@ -16,7 +16,8 @@ class AuditoriaAMED:
         if f_id in FRENTES_PADRAO: return f_id
         return MAPEAMENTO_FRENTE.get(t_proj, "")
 
-    def processar_auditoria(self, df_aud, mapa_centros, mapa_mb52, mapa_mb51_baixas):
+    # REMOVI O ARGUMENTO 'mapa_mb51_baixas'
+    def processar_auditoria(self, df_aud, mapa_centros, mapa_mb52, mapa_centros_mb51={}):
         pd.set_option('future.no_silent_downcasting', True)
         
         # 1. Preparação
@@ -67,7 +68,7 @@ class AuditoriaAMED:
         df_aud['$ VALOR UNIT'] = df_aud.apply(calc_unit, axis=1)
         df_aud['$ SALDO X QTDE'] = (df_aud['QTDE APLICAR'] * df_aud['$ VALOR UNIT'] * -1).round(2)
 
-        # 4. Auditoria + Rastreabilidade (MB51)
+        # 4. Auditoria Lógica (Sem Validação Contábil)
         livro_faltas = {}
         mask_ativos = df_aud['Status ID'].astype(str).str.upper() != "CANCELADO"
         for _, r in df_aud[(df_aud['SALDO_AUDIT'] < 0) & mask_ativos & (df_aud['UF'] != "")].iterrows():
@@ -75,26 +76,10 @@ class AuditoriaAMED:
             if ch not in livro_faltas: livro_faltas[ch] = []
             livro_faltas[ch].append({'ID': str(r['ID']), 'FALTA': abs(r['SALDO_AUDIT'])})
 
-        l_st, l_ac, l_sg, l_val_sap = [], [], [], []
+        l_st, l_ac, l_sg = [], [], [] 
+        # REMOVIDO: l_val_sap = []
         
         for _, r in df_aud.iterrows():
-            # --- Validação Contábil (MB51) ---
-            # Quanto foi baixado no SAP para este SKU neste Centro?
-            qtd_aplicada = r['QTDE APLICAR']
-            val_contabil = "N/A"
-            
-            if qtd_aplicada > 0 and r['CENTRO'] != 'N/D':
-                # Verifica se houve baixa real no SAP
-                baixa_sap = mapa_mb51_baixas.get((r['SKU_STR'], r['CENTRO']), 0.0)
-                if baixa_sap >= qtd_aplicada:
-                    val_contabil = "BAIXA CONFIRMADA"
-                elif baixa_sap > 0:
-                    val_contabil = f"BAIXA PARCIAL ({baixa_sap})"
-                else:
-                    val_contabil = "RISCO: SEM BAIXA NO SAP"
-            l_val_sap.append(val_contabil)
-            # ---------------------------------
-
             if str(r.get('Status ID', '')).upper() == "CANCELADO":
                 l_st.append("Cancelado"); l_ac.append("Cancelado"); l_sg.append("Cancelado"); continue
 
@@ -123,10 +108,16 @@ class AuditoriaAMED:
 
         df_aud['STATUS'], df_aud['AÇÃO'], df_aud['SUGESTÃO'] = l_st, l_ac, l_sg
         df_aud['RESULTADO_OPERACIONAL'] = df_aud['STATUS']
-        df_aud['VALIDAÇÃO CONTÁBIL'] = l_val_sap # Nova coluna
+        # REMOVIDO: df_aud['VALIDAÇÃO CONTÁBIL']
 
-        # Preenche N/A nas colunas faltantes do config
+        # --- NOVA COLUNA: CENTRO MB51 ---
+        if mapa_centros_mb51:
+            df_aud['CENTRO MB51'] = df_aud['ID_STR'].map(mapa_centros_mb51).fillna('-')
+        else:
+            df_aud['CENTRO MB51'] = '-'
+
         for col in self.cols_saida:
-            if col not in df_aud.columns: df_aud[col] = "N/A"
+            if col not in df_aud.columns and col != "VALIDAÇÃO CONTÁBIL": # Ignora se ainda tiver no config
+                df_aud[col] = "N/A"
 
         return df_aud.drop(columns=['ID_STR', 'SKU_STR', 'SALDO_AUDIT'], errors='ignore')
