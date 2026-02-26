@@ -25,9 +25,8 @@ class AuditoriaAMED:
         df_aud['UF'] = df_aud['UF'].fillna('').astype(str).str.strip().str.upper()
         df_aud['FRENTE ATUALIZADA'] = df_aud.apply(self._saneamento, axis=1)
 
-        # Listas para colunas
         l_centro, l_lvut, l_exec, l_amed, l_valor_amed, l_saldo = [], [], [], [], [], []
-        l_unitario_real = [] # <--- NOVA LISTA PARA O CÁLCULO CORRETO
+        l_unitario_real = []
 
         # 2. Dados Físicos (MB52)
         for _, row in df_aud.iterrows():
@@ -39,23 +38,25 @@ class AuditoriaAMED:
                 l_lvut.append(0.0); l_exec.append(0.0); l_amed.append(0.0)
                 l_valor_amed.append(0.0); l_saldo.append("NÃO"); l_unitario_real.append(0.0)
             else:
-                # Busca dados dos 3 depósitos
                 d_lvut = mapa_mb52.get((sku_b, centro, 'LVUT'), {'qtd': 0.0, 'valor': 0.0})
                 d_exec = mapa_mb52.get((sku_b, centro, 'EXEC'), {'qtd': 0.0, 'valor': 0.0})
                 d_amed = mapa_mb52.get((sku_b, centro, 'AMED'), {'qtd': 0.0, 'valor': 0.0})
 
-                # Salva nas listas para o Excel
                 l_lvut.append(d_lvut['qtd'])
                 l_exec.append(d_exec['qtd'])
                 l_amed.append(d_amed['qtd'])
-                l_valor_amed.append(d_amed['valor']) # Mantém a coluna visual original (só valor AMED)
+                l_valor_amed.append(d_amed['valor']) 
                 l_saldo.append("SIM" if (d_lvut['qtd']>0 or d_exec['qtd']>0 or d_amed['qtd']>0) else "NÃO")
 
-                # --- CÁLCULO DO PREÇO MÉDIO REAL (GLOBAL DO CENTRO) ---
+                # --- CÁLCULO DA MÉDIA PONDERADA DO CENTRO (SANEADA) ---
+                # Soma tudo o que existe no centro para achar o preço médio real do material
                 qtd_total = d_lvut['qtd'] + d_exec['qtd'] + d_amed['qtd']
                 val_total = d_lvut['valor'] + d_exec['valor'] + d_amed['valor']
 
-                if qtd_total > 0:
+                # TRAVA DE SEGURANÇA:
+                # Só calcula se tivermos pelo menos 0.01 peça. 
+                # Isso evita que sobras de 0.0001 inflem o preço para milhões.
+                if abs(qtd_total) > 0.01:
                     preco_medio = val_total / qtd_total
                     l_unitario_real.append(round(preco_medio, 2))
                 else:
@@ -67,7 +68,7 @@ class AuditoriaAMED:
         df_aud['QTDE LVUT'], df_aud['QTDE EXEC'] = l_lvut, l_exec
         df_aud['QTDE AMED'], df_aud['$ VALOR - AMED'] = l_amed, l_valor_amed
         df_aud['POSSUI SALDO'] = l_saldo
-        df_aud['$ VALOR UNIT'] = l_unitario_real # <--- Agora usa o cálculo correto
+        df_aud['$ VALOR UNIT'] = l_unitario_real 
 
         # 3. Financeiro
         for c in ['APL x DRAFT', 'APL x MEDIÇÃO']: df_aud[c] = pd.to_numeric(df_aud[c], errors='coerce').fillna(0)
@@ -75,9 +76,11 @@ class AuditoriaAMED:
         mask_vivo = df_aud['Aliado'].astype(str).str.upper().str.contains('VIVO', na=False)
         df_aud['SALDO_AUDIT'] = df_aud['APL x MEDIÇÃO'].fillna(0)
         df_aud.loc[mask_vivo, 'SALDO_AUDIT'] = df_aud['APL x DRAFT'].fillna(0)
-        df_aud['QTDE APLICAR'] = df_aud['SALDO_AUDIT']
+        
+        # Arredondamento para evitar dízimas no saldo a aplicar
+        df_aud['QTDE APLICAR'] = df_aud['SALDO_AUDIT'].round(4)
 
-        # Cálculo do Risco Financeiro (Usando o novo unitário correto)
+        # Cálculo do Risco Monetário
         df_aud['$ SALDO X QTDE'] = (df_aud['QTDE APLICAR'] * df_aud['$ VALOR UNIT'] * -1).round(2)
 
         # 4. Auditoria Lógica
@@ -120,7 +123,6 @@ class AuditoriaAMED:
         df_aud['STATUS'], df_aud['AÇÃO'], df_aud['SUGESTÃO'] = l_st, l_ac, l_sg
         df_aud['RESULTADO_OPERACIONAL'] = df_aud['STATUS']
 
-        # --- NOVA COLUNA: CENTRO MB51 ---
         if mapa_centros_mb51:
             df_aud['CENTRO MB51'] = df_aud['ID_STR'].map(mapa_centros_mb51).fillna('-')
         else:
