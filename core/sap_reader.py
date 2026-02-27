@@ -2,13 +2,14 @@
 import pandas as pd
 import numpy as np
 import os
+import re
 import unicodedata
 from datetime import datetime
 
 class SAPReader:
     def __init__(self, config):
         self.config = config
-        self.cols_cfg = config.get('colunas_sap', {}) # Carrega dicionário do YAML
+        self.cols_cfg = config.get('colunas_sap', {})
 
     @staticmethod
     def normalize_str(s):
@@ -29,12 +30,28 @@ class SAPReader:
             return float(texto) * multi
         except: return 0.0
 
-    # Função Auxiliar para pegar colunas dinamicamente
+    # ==========================================
+    # 🧠 NOVA LÓGICA: ÓCULOS EXTRATOR DE ID
+    # ==========================================
+    @staticmethod
+    def extrair_id_valido(valor):
+        """ Extrai blocos numéricos de 5 a 7 dígitos ignorando texto """
+        if pd.isna(valor): return None
+        texto = str(valor).strip()
+        
+        # Regex: Procura de 5 a 7 números juntos (que não tenham números colados antes ou depois)
+        # Funciona para "549094", "APLICAÇÃO 549094", "ID:549094-ENTREGA"
+        matches = re.findall(r'(?<!\d)\d{5,7}(?!\d)', texto)
+        
+        if matches:
+            return matches[0] # Retorna o primeiro ID válido encontrado na frase
+        return None
+
     def _get_col_name(self, df, chave_config):
         padroes = self.cols_cfg.get(chave_config, [])
-        # Fallback se não tiver no config (hardcode minimo de segurança)
         if not padroes:
             if chave_config == 'recebedor': padroes = ['RECEBEDOR', 'RECEP.', 'WEMPF']
+            elif chave_config == 'texto_cabecalho': padroes = ['TEXTO CABEÇALHO', 'TEXTO', 'SGTXT', 'BKTXT']
             else: return None
         
         for pat in padroes:
@@ -70,8 +87,6 @@ class SAPReader:
             except: continue
         return mapa, pd.DataFrame(evidencias)
 
-    def carregar_historico_movimentos(self): return {} 
-
     def carregar_mapa_centros(self):
         caminho = self.config['arquivos']['centros']
         if not os.path.exists(caminho): return {}
@@ -104,21 +119,29 @@ class SAPReader:
         if not os.path.exists(caminho_mb51): return {}
 
         df = pd.read_excel(caminho_mb51, engine='calamine')
-
         col_rec = self._get_col_name(df, 'recebedor')
+        col_texto = self._get_col_name(df, 'texto_cabecalho')
         col_cen = self._get_col_name(df, 'centro')
 
-        if not col_rec or not col_cen: return {}
+        if not col_cen: return {}
 
-        df['ID_LIMPO'] = df[col_rec].fillna('SEM_ID').astype(str).str.strip()
+        # 🧠 APLICAÇÃO DO RESGATE DE ID (Hierarquia H -> J)
+        if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
+        else: df['ID_H'] = None
+        
+        if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
+        else: df['ID_J'] = None
+
+        # combine_first: Se ID_H for nulo, pega do ID_J.
+        df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
         df['CENTRO_LIMPO'] = df[col_cen].astype(str).str.strip()
         
-        df = df[~df['ID_LIMPO'].isin(['SEM_ID', 'nan', '0', '0.0', ''])]
+        df = df[df['ID_LIMPO'] != 'SEM_ID']
         mapa = df.groupby('ID_LIMPO')['CENTRO_LIMPO'].apply(lambda x: ' | '.join(sorted(set(x)))).to_dict()
         return mapa
 
     # ---------------------------------------------------------
-    # 🕵️‍♂️ AUDITORIA CONTÍNUA (ENTERPRISE v17)
+    # 🕵️‍♂️ AUDITORIA CONTÍNUA (ENTERPRISE v17.2)
     # ---------------------------------------------------------
     def gerar_raio_x_amed(self, mapa_mb52_referencia):
         caminho_mb51 = self.config['arquivos']['mb51']
@@ -128,17 +151,15 @@ class SAPReader:
 
         print("   ☢️ Iniciando Motor de Auditoria Contínua...")
         
-        # 1. Trava de Segurança CSV
         df_dim = pd.read_csv(caminho_dim, sep=';', dtype=str)
         if df_dim['BWART'].duplicated().any():
             duplicados = df_dim[df_dim['BWART'].duplicated()]['BWART'].tolist()
-            raise ValueError(f"❌ ERRO CRÍTICO: Movimentos duplicados no CSV: {duplicados}. Corrija o arquivo dim_movimentos.csv!")
+            raise ValueError(f"❌ ERRO CRÍTICO: Movimentos duplicados no CSV: {duplicados}. Corrija o arquivo!")
 
         df_dim['BWART'] = df_dim['BWART'].str.strip()
         if 'TIPO_ESPECIAL' not in df_dim.columns: df_dim['TIPO_ESPECIAL'] = 'PADRAO'
         lista_saida = df_dim[df_dim['SENTIDO_AMED'] == 'SAIDA']['BWART'].unique()
         
-        # 2. Leitura Dinâmica (Via Config)
         df = pd.read_excel(caminho_mb51, engine='calamine')
 
         col_centro = self._get_col_name(df, 'centro')
@@ -150,6 +171,7 @@ class SAPReader:
         col_data = self._get_col_name(df, 'data_lanc')
         col_mov = self._get_col_name(df, 'movimento')
         col_rec = self._get_col_name(df, 'recebedor')
+        col_texto = self._get_col_name(df, 'texto_cabecalho') # <--- Lendo Coluna J
         col_doc = self._get_col_name(df, 'documento')
         col_item = self._get_col_name(df, 'item')
         col_user = self._get_col_name(df, 'usuario')
@@ -162,8 +184,16 @@ class SAPReader:
         df[col_dep] = df[col_dep].astype(str).str.strip().str.upper()
         df[col_mat] = df[col_mat].apply(lambda x: self.normalize_str(x))
         df[col_centro] = df[col_centro].apply(lambda x: self.normalize_str(x))
-        df['ID_LIMPO'] = df[col_rec].fillna('SEM_ID').astype(str).str.strip()
-        df.loc[df['ID_LIMPO'].isin(['', 'nan', '0', '0.0']), 'ID_LIMPO'] = 'SEM_ID'
+        
+        # 🧠 APLICAÇÃO DO RESGATE DE ID (Hierarquia H -> J)
+        if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
+        else: df['ID_H'] = None
+        
+        if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
+        else: df['ID_J'] = None
+
+        # O robô tenta o H, se falhar, puxa do J. Se os dois falharem, é 'SEM_ID'
+        df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
         
         if col_lote:
             df['LOTE_LIMPO'] = df[col_lote].fillna('SEM_LOTE').astype(str).str.strip()
@@ -175,15 +205,16 @@ class SAPReader:
         df_merged['SENTIDO_REAL'] = np.where(df_merged[col_dep].str.contains('AMED', na=False), df_merged['SENTIDO_AMED'], 'NEUTRO')
 
         df_proc = df_merged[df_merged['SENTIDO_REAL'] != 'NEUTRO'].copy()
+        
+        # Agora o groupby empilha as linhas usando o ID REAL (resgatado)
         grupos = df_proc.groupby(['ID_LIMPO', col_mat, col_centro, col_dep, 'LOTE_LIMPO'])
         analise = []
         hoje = datetime.now()
         
-        # Contadores de Limpeza
         count_ignored = 0
         count_processed = 0
 
-        print(f"   📊 Processando {len(grupos)} pilhas de estoque...")
+        print(f"   📊 Processando {len(grupos)} pilhas de estoque consolidadas...")
 
         for (id_dono, material, centro, deposito, lote), grupo in grupos:
             cols_sort = [col_data, col_doc]
@@ -228,7 +259,6 @@ class SAPReader:
             saldo_mb52 = mapa_mb52_referencia.get(chave_mb52, {}).get('qtd', 0)
             tem_divergencia = (saldo_reconstruido > 0.1 and saldo_mb52 < 0.01)
 
-            # Filtro de Limpeza
             if saldo_reconstruido < 0.001 and id_dono != 'SEM_ID' and not doc_furo and not tem_divergencia:
                 count_ignored += 1
                 continue
@@ -319,7 +349,7 @@ class SAPReader:
 
             analise.append({'SCORE_RISCO': score_risco, 'STATUS': status_final, 'TIPO_AÇÃO': tipo_acao, 'CAUSA_RAIZ': causa, 'AÇÃO_SUGERIDA': acao, 'RESPONSÁVEL_ATUAL': responsavel_atual, 'LOG_AUDITORIA': log_final, 'FRENTE': frente, 'ID_RECEBEDOR': id_dono, 'NOME_PARCEIRO': nome_empresa, 'MATERIAL': material, 'DESCRIÇÃO': desc_material, 'CENTRO': centro, 'DEPÓSITO': deposito, 'LOTE': lote, 'SALDO_RECONSTRUÍDO': saldo_reconstruido, 'SALDO_MB52_REF': saldo_mb52, 'VALOR_REAL': valor_real_parado, 'AGING_DIAS': aging, 'DT_REF_AGING': dt_fmt, 'DOC_ORIGEM': f"{mov_entrada}-{doc_entrada}", 'RESPONSÁVEL_MOV': user_entrada})
 
-        print(f"   🧹 Limpeza de Dados: {count_ignored} pilhas com saldo zero e sem pendências foram ocultadas.")
+        print(f"   🧹 Limpeza: {count_ignored} pilhas ocultadas.")
         print(f"   📋 Total Reportado: {count_processed} registros.")
         
         return pd.DataFrame(analise)
