@@ -17,7 +17,7 @@ def processar_tudo():
     for p in ['data', 'output', 'logs']:
         if not os.path.exists(p): os.makedirs(p)
         
-    log.info("🚀 INICIANDO AUDITORIA AMED v17.0 (ENTERPRISE HARDENED)")
+    log.info("🚀 INICIANDO AUDITORIA AMED E TORRE DE CONTROLE v17.3")
 
     try:
         config = carregar_config()
@@ -44,15 +44,17 @@ def processar_tudo():
 
         log.info("☢️ Executando Motor de Auditoria Contínua...")
         df_raiox = reader.gerar_raio_x_amed(mapa_mb52) 
+        
+        log.info("📈 Construindo Extrato Diário (Últimos 6 Meses)...")
+        df_extrato = reader.gerar_extrato_diario(dias_retroativos=180)
 
-        # --- GERAÇÃO DE METADADOS (RASTREABILIDADE) ---
         df_meta = pd.DataFrame({
-            'CHAVE': ['DATA_EXECUCAO', 'VERSAO_ROBO', 'ARQUIVO_CONFIG', 'ARQUIVO_REGRAS'],
+            'CHAVE': ['DATA_EXECUCAO', 'VERSAO_ROBO', 'ARQUIVO_CONFIG', 'JANELA_EXTRATO'],
             'VALOR': [
                 datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
-                'v17.0 (Enterprise)',
+                'v17.3 (Torre de Controle)',
                 'config.yaml',
-                'dim_movimentos.csv'
+                '180 Dias (Data de Lançamento)'
             ]
         })
 
@@ -62,32 +64,33 @@ def processar_tudo():
             try:
                 with pd.ExcelWriter(config['saidas']['dashboard'], engine='xlsxwriter') as writer:
                     
-                    # 1. Metadados (Aba Técnica)
+                    # 1. Metadados
                     df_meta.to_excel(writer, sheet_name='INFO_EXECUCAO', index=False)
                     
-                    # 2. Auditoria Padrão
+                    # 2. Auditoria
                     resultado.to_excel(writer, sheet_name='analise auditoria', index=False)
-                    # Mantém formatação básica de dados (cabeçalho, largura), sem ícones
                     try: ExcelFormatter.aplicar_formato(writer, resultado)
                     except: pass
                     
                     # 3. Raio-X
                     if not df_raiox.empty:
                         df_raiox.sort_values(by=['SCORE_RISCO', 'VALOR_REAL'], ascending=[False, False], inplace=True)
-                        sheet_raiox = 'RAIO_X_AMED'
-                        df_raiox.to_excel(writer, sheet_name=sheet_raiox, index=False)
-                        
-                        # Formatação Apenas de Tipos de Dados (Para Power Query)
-                        wb = writer.book; ws = writer.sheets[sheet_raiox]
+                        df_raiox.to_excel(writer, sheet_name='RAIO_X_AMED', index=False)
+                        wb = writer.book; ws = writer.sheets['RAIO_X_AMED']
                         fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
                         fmt_num = wb.add_format({'num_format': '0'})
-                        
-                        # Colunas de Valores e Números
-                        ws.set_column('A:A', 12) # Score
-                        ws.set_column('P:P', 12, fmt_num)
-                        ws.set_column('Q:Q', 12, fmt_num)
-                        ws.set_column('R:R', 18, fmt_money)
-                        ws.set_column('S:S', 10, fmt_num)
+                        ws.set_column('A:A', 12); ws.set_column('P:Q', 12, fmt_num)
+                        ws.set_column('R:R', 18, fmt_money); ws.set_column('S:S', 10, fmt_num)
+
+                    # 4. Extrato Diário (A Novidade!)
+                    if not df_extrato.empty:
+                        df_extrato.to_excel(writer, sheet_name='EXTRATO_DIARIO', index=False)
+                        ws_ext = writer.sheets['EXTRATO_DIARIO']
+                        fmt_num_ext = wb.add_format({'num_format': '#,##0.00'})
+                        # Esticando colunas para ficar bonito
+                        ws_ext.set_column('A:A', 15); ws_ext.set_column('B:C', 12)
+                        ws_ext.set_column('D:D', 18); ws_ext.set_column('E:E', 40)
+                        ws_ext.set_column('F:F', 12); ws_ext.set_column('G:I', 18, fmt_num_ext)
 
                 sucesso = True
             except PermissionError:

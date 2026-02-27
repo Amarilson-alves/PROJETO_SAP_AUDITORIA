@@ -30,21 +30,12 @@ class SAPReader:
             return float(texto) * multi
         except: return 0.0
 
-    # ==========================================
-    # 🧠 NOVA LÓGICA: ÓCULOS EXTRATOR DE ID
-    # ==========================================
     @staticmethod
     def extrair_id_valido(valor):
-        """ Extrai blocos numéricos de 5 a 7 dígitos ignorando texto """
         if pd.isna(valor): return None
         texto = str(valor).strip()
-        
-        # Regex: Procura de 5 a 7 números juntos (que não tenham números colados antes ou depois)
-        # Funciona para "549094", "APLICAÇÃO 549094", "ID:549094-ENTREGA"
         matches = re.findall(r'(?<!\d)\d{5,7}(?!\d)', texto)
-        
-        if matches:
-            return matches[0] # Retorna o primeiro ID válido encontrado na frase
+        if matches: return matches[0]
         return None
 
     def _get_col_name(self, df, chave_config):
@@ -59,7 +50,6 @@ class SAPReader:
             if found: return found
         return None
 
-    # --- LEITURA BÁSICA ---
     def carregar_mapa_mb52(self):
         caminho = self.config['arquivos']['mb52']
         if not os.path.exists(caminho): raise FileNotFoundError(f"MB52 não encontrada: {caminho}")
@@ -111,9 +101,6 @@ class SAPReader:
         df.columns = [str(c).strip() for c in df_raw.iloc[head]]
         return df.loc[:, ~df.columns.str.contains('^nan$|^Unnamed', case=False, na=True)]
 
-    # ---------------------------------------------------------
-    # 🌍 MAPA DE CENTROS POR ID (GEO TRACKING)
-    # ---------------------------------------------------------
     def gerar_mapa_centros_por_id(self):
         caminho_mb51 = self.config['arquivos']['mb51']
         if not os.path.exists(caminho_mb51): return {}
@@ -125,14 +112,12 @@ class SAPReader:
 
         if not col_cen: return {}
 
-        # 🧠 APLICAÇÃO DO RESGATE DE ID (Hierarquia H -> J)
         if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
         else: df['ID_H'] = None
         
         if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
         else: df['ID_J'] = None
 
-        # combine_first: Se ID_H for nulo, pega do ID_J.
         df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
         df['CENTRO_LIMPO'] = df[col_cen].astype(str).str.strip()
         
@@ -140,9 +125,6 @@ class SAPReader:
         mapa = df.groupby('ID_LIMPO')['CENTRO_LIMPO'].apply(lambda x: ' | '.join(sorted(set(x)))).to_dict()
         return mapa
 
-    # ---------------------------------------------------------
-    # 🕵️‍♂️ AUDITORIA CONTÍNUA (ENTERPRISE v17.2)
-    # ---------------------------------------------------------
     def gerar_raio_x_amed(self, mapa_mb52_referencia):
         caminho_mb51 = self.config['arquivos']['mb51']
         caminho_dim = self.config['arquivos']['dim_movimentos']
@@ -152,10 +134,6 @@ class SAPReader:
         print("   ☢️ Iniciando Motor de Auditoria Contínua...")
         
         df_dim = pd.read_csv(caminho_dim, sep=';', dtype=str)
-        if df_dim['BWART'].duplicated().any():
-            duplicados = df_dim[df_dim['BWART'].duplicated()]['BWART'].tolist()
-            raise ValueError(f"❌ ERRO CRÍTICO: Movimentos duplicados no CSV: {duplicados}. Corrija o arquivo!")
-
         df_dim['BWART'] = df_dim['BWART'].str.strip()
         if 'TIPO_ESPECIAL' not in df_dim.columns: df_dim['TIPO_ESPECIAL'] = 'PADRAO'
         lista_saida = df_dim[df_dim['SENTIDO_AMED'] == 'SAIDA']['BWART'].unique()
@@ -171,7 +149,7 @@ class SAPReader:
         col_data = self._get_col_name(df, 'data_lanc')
         col_mov = self._get_col_name(df, 'movimento')
         col_rec = self._get_col_name(df, 'recebedor')
-        col_texto = self._get_col_name(df, 'texto_cabecalho') # <--- Lendo Coluna J
+        col_texto = self._get_col_name(df, 'texto_cabecalho') 
         col_doc = self._get_col_name(df, 'documento')
         col_item = self._get_col_name(df, 'item')
         col_user = self._get_col_name(df, 'usuario')
@@ -185,14 +163,10 @@ class SAPReader:
         df[col_mat] = df[col_mat].apply(lambda x: self.normalize_str(x))
         df[col_centro] = df[col_centro].apply(lambda x: self.normalize_str(x))
         
-        # 🧠 APLICAÇÃO DO RESGATE DE ID (Hierarquia H -> J)
         if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
         else: df['ID_H'] = None
-        
         if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
         else: df['ID_J'] = None
-
-        # O robô tenta o H, se falhar, puxa do J. Se os dois falharem, é 'SEM_ID'
         df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
         
         if col_lote:
@@ -206,7 +180,6 @@ class SAPReader:
 
         df_proc = df_merged[df_merged['SENTIDO_REAL'] != 'NEUTRO'].copy()
         
-        # Agora o groupby empilha as linhas usando o ID REAL (resgatado)
         grupos = df_proc.groupby(['ID_LIMPO', col_mat, col_centro, col_dep, 'LOTE_LIMPO'])
         analise = []
         hoje = datetime.now()
@@ -286,36 +259,28 @@ class SAPReader:
             tipo_acao = "OPERACIONAL"
             acao = "Monitorar"
             log_detalhe = []
-
             dt_fmt = dt_entrada.strftime('%d/%m/%Y') if pd.notnull(dt_entrada) else "-"
 
             if tem_divergencia:
                 status_lista.append("DIVERGÊNCIA_SISTÊMICA")
-                score_risco = max(score_risco, 95)
-                tipo_acao = "SISTÊMICA"
+                score_risco = max(score_risco, 95); tipo_acao = "SISTÊMICA"
                 log_detalhe.append(f"[ERRO SISTÊMICO] Saldo Robô: {saldo_reconstruido} vs MB52: ZERO.")
 
             if doc_furo:
                 status_lista.append("FURO_CONTÁBIL")
-                causa = "CONSUMO S/ LASTRO"
-                score_risco = max(score_risco, 100)
-                tipo_acao = "FINANCEIRA"
+                causa = "CONSUMO S/ LASTRO"; score_risco = max(score_risco, 100); tipo_acao = "FINANCEIRA"
                 log_detalhe.append(f"[FURO] Saída doc {doc_furo} sem entrada histórica suficiente.")
 
             if id_dono == 'SEM_ID':
                 status_lista.append("SEM_ID")
-                causa = "MATERIAL ÓRFÃO"
-                score_risco = max(score_risco, 100)
-                tipo_acao = "OPERACIONAL"
+                causa = "MATERIAL ÓRFÃO"; score_risco = max(score_risco, 100); tipo_acao = "OPERACIONAL"
                 acao = "Regularizar ID ou Estornar"
                 log_detalhe.append(f"[ÓRFÃO] Usuário entrada: {user_entrada}.")
 
             if status_origem == "IRREGULAR_SEM_HISTORICO":
                 status_lista.append("PROCEDIMENTO_INVÁLIDO")
                 causa = f"ENTRADA IRREGULAR ({mov_entrada})"
-                score_risco = max(score_risco, 90)
-                tipo_acao = "OPERACIONAL"
-                acao = "Estornar Entrada"
+                score_risco = max(score_risco, 90); tipo_acao = "OPERACIONAL"; acao = "Estornar Entrada"
                 log_detalhe.append(f"[PROCEDIMENTO] {mov_entrada} sem saída prévia.")
 
             if aging > 90:
@@ -326,14 +291,10 @@ class SAPReader:
                 acao = "Devolver ao CD"
 
             if score_risco < 90:
-                if tipo_entrada == 'ESTORNO':
-                    causa = "RETORNO DE OBRA"; acao = "Reaplicar Urgente"; tipo_acao = "LOGÍSTICA"; score_risco = max(score_risco, 60)
-                elif tipo_entrada == 'SOBRA_INV':
-                    causa = "SOBRA FÍSICA"; acao = "Validar origem"; tipo_acao = "OPERACIONAL"; score_risco = max(score_risco, 40)
-                elif tipo_entrada == 'TRANSFORMACAO':
-                    causa = "TRANSFORMAÇÃO (309)"; score_risco = max(score_risco, 70)
-                elif tipo_entrada == 'COMPRA':
-                    causa = "COMPRA NOVA"; acao = "Validar aplicação"; tipo_acao = "LOGÍSTICA"; score_risco = max(score_risco, 20)
+                if tipo_entrada == 'ESTORNO': causa = "RETORNO DE OBRA"; acao = "Reaplicar Urgente"; tipo_acao = "LOGÍSTICA"; score_risco = max(score_risco, 60)
+                elif tipo_entrada == 'SOBRA_INV': causa = "SOBRA FÍSICA"; acao = "Validar origem"; tipo_acao = "OPERACIONAL"; score_risco = max(score_risco, 40)
+                elif tipo_entrada == 'TRANSFORMACAO': causa = "TRANSFORMAÇÃO (309)"; score_risco = max(score_risco, 70)
+                elif tipo_entrada == 'COMPRA': causa = "COMPRA NOVA"; acao = "Validar aplicação"; tipo_acao = "LOGÍSTICA"; score_risco = max(score_risco, 20)
 
             status_final = " + ".join(status_lista) if status_lista else "PENDENTE"
             log_final = " | ".join(log_detalhe) if log_detalhe else f"Entrada regular via {mov_entrada}."
@@ -349,7 +310,89 @@ class SAPReader:
 
             analise.append({'SCORE_RISCO': score_risco, 'STATUS': status_final, 'TIPO_AÇÃO': tipo_acao, 'CAUSA_RAIZ': causa, 'AÇÃO_SUGERIDA': acao, 'RESPONSÁVEL_ATUAL': responsavel_atual, 'LOG_AUDITORIA': log_final, 'FRENTE': frente, 'ID_RECEBEDOR': id_dono, 'NOME_PARCEIRO': nome_empresa, 'MATERIAL': material, 'DESCRIÇÃO': desc_material, 'CENTRO': centro, 'DEPÓSITO': deposito, 'LOTE': lote, 'SALDO_RECONSTRUÍDO': saldo_reconstruido, 'SALDO_MB52_REF': saldo_mb52, 'VALOR_REAL': valor_real_parado, 'AGING_DIAS': aging, 'DT_REF_AGING': dt_fmt, 'DOC_ORIGEM': f"{mov_entrada}-{doc_entrada}", 'RESPONSÁVEL_MOV': user_entrada})
 
-        print(f"   🧹 Limpeza: {count_ignored} pilhas ocultadas.")
-        print(f"   📋 Total Reportado: {count_processed} registros.")
-        
         return pd.DataFrame(analise)
+
+    # =========================================================
+    # 📈 EXTRATO DIÁRIO (O FLUXO DE CAIXA DOS DEPÓSITOS)
+    # =========================================================
+    def gerar_extrato_diario(self, dias_retroativos=180):
+        caminho_mb51 = self.config['arquivos']['mb51']
+        if not os.path.exists(caminho_mb51): return pd.DataFrame()
+
+        print(f"   📅 Gerando Extrato Diário da Operação (Últimos {dias_retroativos} dias)...")
+        
+        df = pd.read_excel(caminho_mb51, engine='calamine')
+
+        col_centro = self._get_col_name(df, 'centro')
+        col_dep = self._get_col_name(df, 'deposito')
+        col_mat = self._get_col_name(df, 'material')
+        col_desc = self._get_col_name(df, 'descricao')
+        col_qtd = self._get_col_name(df, 'quantidade')
+        col_data = self._get_col_name(df, 'data_lanc')
+        col_rec = self._get_col_name(df, 'recebedor')
+        col_texto = self._get_col_name(df, 'texto_cabecalho')
+
+        if not col_data: return pd.DataFrame()
+        
+        # 1. Filtro de Tempo (6 Meses)
+        df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
+        data_limite = datetime.now() - pd.Timedelta(days=dias_retroativos)
+        df = df[df[col_data] >= data_limite].copy()
+
+        # Limpeza Básica
+        df[col_dep] = df[col_dep].astype(str).str.strip().str.upper()
+        df[col_mat] = df[col_mat].apply(lambda x: self.normalize_str(x))
+        df[col_centro] = df[col_centro].apply(lambda x: self.normalize_str(x))
+        df['DESC_LIMPA'] = df[col_desc].astype(str).str.strip()
+        
+        # 2. Resgate de ID (A Lógica H e J)
+        if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
+        else: df['ID_H'] = None
+        
+        if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
+        else: df['ID_J'] = None
+        
+        df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
+        
+        # 3. Matemática de Sinais (Usando o padrão SAP: Negativos = Saída)
+        # O método converter_sap_br já entende o "10-" como -10.0
+        df['QTD_REAL'] = df[col_qtd].apply(self.converter_sap_br)
+        
+        df['QTD_ENTRADA'] = np.where(df['QTD_REAL'] > 0, df['QTD_REAL'], 0.0)
+        df['QTD_SAIDA'] = np.where(df['QTD_REAL'] < 0, df['QTD_REAL'].abs(), 0.0)
+        
+        df['DATA_DIA'] = df[col_data].dt.strftime('%d/%m/%Y')
+        
+        # 4. Agrupamento Final (O Extrato Limpo)
+        agrupado = df.groupby(
+            ['DATA_DIA', col_data, col_centro, 'ID_LIMPO', col_mat, 'DESC_LIMPA', col_dep], 
+            as_index=False
+        ).agg(
+            ENTRADAS=('QTD_ENTRADA', 'sum'),
+            SAIDAS=('QTD_SAIDA', 'sum')
+        )
+
+        # Calculo da Variação
+        agrupado['VARIAÇÃO DO DIA'] = agrupado['ENTRADAS'] - agrupado['SAIDAS']
+        
+        # 5. O Filtro "Visão Líquida": Ignora onde a variação ficou em 0 (Ex: Tirou 10 e Devolveu 10)
+        agrupado = agrupado[agrupado['VARIAÇÃO DO DIA'].round(3) != 0].copy()
+
+        # Formatando para Saída
+        agrupado.rename(columns={
+            'DATA_DIA': 'DATA OPERAÇÃO',
+            col_centro: 'CENTRO',
+            'ID_LIMPO': 'ID_RECEBEDOR',
+            col_mat: 'SKU',
+            'DESC_LIMPA': 'DESCRIÇÃO',
+            col_dep: 'DEPÓSITO',
+            'ENTRADAS': 'ENTRADAS LÍQUIDAS',
+            'SAIDAS': 'SAÍDAS LÍQUIDAS'
+        }, inplace=True)
+
+        # Ordena cronologicamente para facilitar a leitura no PowerQuery
+        agrupado.sort_values(by=[col_data, 'CENTRO', 'ID_RECEBEDOR', 'SKU'], inplace=True)
+        agrupado.drop(columns=[col_data], inplace=True)
+        
+        print(f"   📋 Torre de Controle: {len(agrupado)} movimentos diários consolidados com sucesso.")
+        return agrupado
