@@ -18,7 +18,7 @@ indices_fixos:
   centro_col_id: 10
   centro_col_nome: 3
 
-# 4. MAPEAMENTO DE COLUNAS SAP (NOVO - SEM HARDCODE)
+# 4. MAPEAMENTO DE COLUNAS SAP
 colunas_sap:
   centro: ["CENTRO", "WERKS"]
   deposito: ["DEPÓSITO", "DEPOSITO", "LGORT"]
@@ -27,7 +27,8 @@ colunas_sap:
   quantidade: ["QUANTIDADE", "QTD"]
   valor: ["MONTANTE", "VALOR", "DMBTR"]
   movimento: ["MOVIMENTO", "BWART"]
-  recebedor: ["RECEBEDOR", "RECEP.", "WEMPF", "DESTINATÁRIO"] # Adicione novos aqui se precisar
+  recebedor: ["RECEBEDOR", "RECEP.", "WEMPF", "DESTINATÁRIO"]
+  texto_cabecalho: ["TEXTO CABEÇALHO", "TEXTO", "SGTXT", "BKTXT"]
   data_lanc: ["DATA DE LANÇAMENTO", "DATA LANC.", "BUDAT"]
   documento: ["DOC.MATERIAL", "DOCUMENTO"]
   item: ["ITEM", "ITEM DO DOCUMENTO", "ZEILE"]
@@ -42,7 +43,6 @@ layout_saida:
     - "AÇÃO"
     - "SUGESTÃO"
     - "RESULTADO_OPERACIONAL"
-    - "VALIDAÇÃO CONTÁBIL" # Se ainda quiser manter no config, ok, mas o código ignora.
     - "CENTRO"
     - "QTDE LVUT"
     - "QTDE EXEC"
@@ -52,3 +52,7 @@ layout_saida:
     - "QTDE APLICAR"
     - "$ VALOR UNIT"
     - "$ SALDO X QTDE"
+
+# 5. REGRAS DE NEGÓCIO (NOVO)
+regras_negocio:
+  termos_manutencao: ["MNT", "MTN", "MANUT", "REPARO", "CORRETIVA"]

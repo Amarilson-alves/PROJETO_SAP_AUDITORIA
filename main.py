@@ -17,7 +17,7 @@ def processar_tudo():
     for p in ['data', 'output', 'logs']:
         if not os.path.exists(p): os.makedirs(p)
         
-    log.info("🚀 INICIANDO AUDITORIA AMED E TORRE DE CONTROLE v17.3")
+    log.info("🚀 INICIANDO AUDITORIA AMED E TORRE DE CONTROLE v17.4 (OTIMIZADO)")
 
     try:
         config = carregar_config()
@@ -52,27 +52,26 @@ def processar_tudo():
             'CHAVE': ['DATA_EXECUCAO', 'VERSAO_ROBO', 'ARQUIVO_CONFIG', 'JANELA_EXTRATO'],
             'VALOR': [
                 datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
-                'v17.3 (Torre de Controle)',
+                'v17.4 (Enterprise Optimized)',
                 'config.yaml',
                 '180 Dias (Data de Lançamento)'
             ]
         })
 
         log.info(f"📊 Gerando Relatório Final: {config['saidas']['dashboard']}")
+        
+        # CORREÇÃO DE BUG: Loop de Retry inoperante consertado para 3 tentativas
         sucesso = False; tentativas = 0
-        while not sucesso and tentativas < 1:
+        while not sucesso and tentativas < 3:
             try:
                 with pd.ExcelWriter(config['saidas']['dashboard'], engine='xlsxwriter') as writer:
                     
-                    # 1. Metadados
                     df_meta.to_excel(writer, sheet_name='INFO_EXECUCAO', index=False)
                     
-                    # 2. Auditoria
                     resultado.to_excel(writer, sheet_name='analise auditoria', index=False)
                     try: ExcelFormatter.aplicar_formato(writer, resultado)
                     except: pass
                     
-                    # 3. Raio-X
                     if not df_raiox.empty:
                         df_raiox.sort_values(by=['SCORE_RISCO', 'VALOR_REAL'], ascending=[False, False], inplace=True)
                         df_raiox.to_excel(writer, sheet_name='RAIO_X_AMED', index=False)
@@ -82,21 +81,24 @@ def processar_tudo():
                         ws.set_column('A:A', 12); ws.set_column('P:Q', 12, fmt_num)
                         ws.set_column('R:R', 18, fmt_money); ws.set_column('S:S', 10, fmt_num)
 
-                    # 4. Extrato Diário (A Novidade!)
                     if not df_extrato.empty:
                         df_extrato.to_excel(writer, sheet_name='EXTRATO_DIARIO', index=False)
                         ws_ext = writer.sheets['EXTRATO_DIARIO']
                         fmt_num_ext = wb.add_format({'num_format': '#,##0.00'})
-                        # Esticando colunas para ficar bonito
                         ws_ext.set_column('A:A', 15); ws_ext.set_column('B:C', 12)
                         ws_ext.set_column('D:D', 18); ws_ext.set_column('E:E', 40)
                         ws_ext.set_column('F:F', 12); ws_ext.set_column('G:I', 18, fmt_num_ext)
 
                 sucesso = True
             except PermissionError:
-                log.error("🚫 ARQUIVO ABERTO! Feche o Excel..."); time.sleep(5); tentativas += 1
+                tentativas += 1
+                log.warning(f"⚠️ Arquivo Excel aberto. Tentativa {tentativas}/3. Pausando 5s...")
+                time.sleep(5)
         
-        if not sucesso: return
+        if not sucesso:
+            log.error("🚫 Falha ao salvar: O arquivo permaneceu aberto após 3 tentativas.")
+            return
+
         try: df_evidencias.to_csv(config['saidas']['evidencias'], index=False, sep=';', decimal=',')
         except: pass
         log.info("✅ RELATÓRIO FINALIZADO COM SUCESSO!")

@@ -10,6 +10,7 @@ class SAPReader:
     def __init__(self, config):
         self.config = config
         self.cols_cfg = config.get('colunas_sap', {})
+        self.regras = config.get('regras_negocio', {})
 
     @staticmethod
     def normalize_str(s):
@@ -74,7 +75,10 @@ class SAPReader:
                 mapa[chave]['qtd'] += q
                 mapa[chave]['valor'] += v
                 evidencias.append({'LINHA_EXCEL': idx_original + 1, 'CENTRO': c, 'SKU': s, 'DESCRIÇÃO': desc, 'DEPÓSITO': d, 'QTD_REGISTRO': q, 'VALOR_REGISTRO': v})
-            except: continue
+            # CORREÇÃO: Logging do erro para evitar risco silencioso
+            except Exception as e: 
+                print(f"   [AVISO] MB52: Linha {idx_original+1} ignorada. Motivo: {str(e)}")
+                continue
         return mapa, pd.DataFrame(evidencias)
 
     def carregar_mapa_centros(self):
@@ -134,6 +138,10 @@ class SAPReader:
         print("   ☢️ Iniciando Motor de Auditoria Contínua...")
         
         df_dim = pd.read_csv(caminho_dim, sep=';', dtype=str)
+        if df_dim['BWART'].duplicated().any():
+            duplicados = df_dim[df_dim['BWART'].duplicated()]['BWART'].tolist()
+            raise ValueError(f"❌ ERRO CRÍTICO: Movimentos duplicados no CSV: {duplicados}. Corrija o arquivo!")
+
         df_dim['BWART'] = df_dim['BWART'].str.strip()
         if 'TIPO_ESPECIAL' not in df_dim.columns: df_dim['TIPO_ESPECIAL'] = 'PADRAO'
         lista_saida = df_dim[df_dim['SENTIDO_AMED'] == 'SAIDA']['BWART'].unique()
@@ -160,8 +168,10 @@ class SAPReader:
         
         df[col_mov] = df[col_mov].astype(str).str.strip()
         df[col_dep] = df[col_dep].astype(str).str.strip().str.upper()
-        df[col_mat] = df[col_mat].apply(lambda x: self.normalize_str(x))
-        df[col_centro] = df[col_centro].apply(lambda x: self.normalize_str(x))
+        
+        # CORREÇÃO: Limpeza do .apply (Mais limpo e rápido)
+        df[col_mat] = df[col_mat].apply(self.normalize_str)
+        df[col_centro] = df[col_centro].apply(self.normalize_str)
         
         if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
         else: df['ID_H'] = None
@@ -187,7 +197,10 @@ class SAPReader:
         count_ignored = 0
         count_processed = 0
 
-        print(f"   📊 Processando {len(grupos)} pilhas de estoque consolidadas...")
+        # Termos de manutenção vindos do config.yaml
+        termos_manut = self.regras.get('termos_manutencao', ['MNT', 'MTN', 'MANUT', 'REPARO', 'CORRETIVA'])
+
+        print(f"   📊 Processando {len(grupos)} pilhas de estoque consolidadas (Modo Turbo - itertuples)...")
 
         for (id_dono, material, centro, deposito, lote), grupo in grupos:
             cols_sort = [col_data, col_doc]
@@ -197,14 +210,19 @@ class SAPReader:
             pilha_estoque = []
             historico_consumo = [] 
             doc_furo = None
-
-            for idx, row in grupo.iterrows():
-                qtd = abs(self.converter_sap_br(row[col_qtd]))
-                val_total = abs(self.converter_sap_br(row[col_val])) if col_val else 0
-                sentido = row['SENTIDO_REAL']
-                tipo_especial = str(row['TIPO_ESPECIAL']) 
-                data_mov = row[col_data]
-                mov = row[col_mov]
+            
+            # CORREÇÃO: Otimização Extrema (iterrows -> itertuples)
+            col_indices = {col: i for i, col in enumerate(grupo.columns)}
+            
+            for row_tuple in grupo.itertuples(index=False, name=None):
+                qtd = abs(self.converter_sap_br(row_tuple[col_indices[col_qtd]]))
+                val_total = abs(self.converter_sap_br(row_tuple[col_indices[col_val]])) if col_val else 0
+                sentido = row_tuple[col_indices['SENTIDO_REAL']]
+                tipo_especial = str(row_tuple[col_indices['TIPO_ESPECIAL']])
+                data_mov = row_tuple[col_indices[col_data]]
+                mov = row_tuple[col_indices[col_mov]]
+                doc_atual = row_tuple[col_indices[col_doc]]
+                usr_atual = row_tuple[col_indices[col_user]] if col_user else "-"
 
                 if sentido == 'ENTRADA':
                     valor_unit = (val_total / qtd) if qtd > 0 else 0
@@ -212,11 +230,11 @@ class SAPReader:
                     if tipo_especial == 'ESTORNO':
                         tem_consumo_previo = any((h['mov'] in lista_saida) and (h['data'] <= data_mov) for h in historico_consumo)
                         if not tem_consumo_previo: status_entrada = "IRREGULAR_SEM_HISTORICO"
-                    pilha_estoque.append({'qtd': qtd, 'valor_unit': valor_unit, 'data': data_mov, 'mov': mov, 'tipo_especial': tipo_especial, 'doc': row[col_doc], 'user': row[col_user], 'status_audit': status_entrada})
+                    pilha_estoque.append({'qtd': qtd, 'valor_unit': valor_unit, 'data': data_mov, 'mov': mov, 'tipo_especial': tipo_especial, 'doc': doc_atual, 'user': usr_atual, 'status_audit': status_entrada})
                 elif sentido == 'SAIDA':
                     historico_consumo.append({'mov': mov, 'data': data_mov})
                     qtd_a_baixar = qtd
-                    if not pilha_estoque and doc_furo is None: doc_furo = f"{mov}-{row[col_doc]}"
+                    if not pilha_estoque and doc_furo is None: doc_furo = f"{mov}-{doc_atual}"
                     while qtd_a_baixar > 0.001 and pilha_estoque:
                         lote_atual = pilha_estoque[-1]
                         if lote_atual['qtd'] <= qtd_a_baixar:
@@ -225,7 +243,7 @@ class SAPReader:
                         else:
                             lote_atual['qtd'] -= qtd_a_baixar
                             qtd_a_baixar = 0
-                    if qtd_a_baixar > 0.001 and doc_furo is None: doc_furo = f"{mov}-{row[col_doc]}"
+                    if qtd_a_baixar > 0.001 and doc_furo is None: doc_furo = f"{mov}-{doc_atual}"
 
             saldo_reconstruido = sum(item['qtd'] for item in pilha_estoque)
             chave_mb52 = (material, centro, deposito)
@@ -301,7 +319,8 @@ class SAPReader:
             
             frente = "IMPLANTAÇÃO"
             nome_empresa = str(grupo[col_nome1].iloc[0]) if col_nome1 else ''
-            termos_manut = ['MNT', 'MTN', 'MANUT', 'REPARO', 'CORRETIVA']
+            
+            # CORREÇÃO: Utilizando a lista limpa que veio do YAML
             if any(t in nome_empresa.upper() for t in termos_manut): frente = "MANUTENÇÃO"
             
             if id_dono == 'SEM_ID': responsavel_atual = f"USR_SAP: {user_entrada}"
@@ -312,9 +331,6 @@ class SAPReader:
 
         return pd.DataFrame(analise)
 
-    # =========================================================
-    # 📈 EXTRATO DIÁRIO (O FLUXO DE CAIXA DOS DEPÓSITOS)
-    # =========================================================
     def gerar_extrato_diario(self, dias_retroativos=180):
         caminho_mb51 = self.config['arquivos']['mb51']
         if not os.path.exists(caminho_mb51): return pd.DataFrame()
@@ -334,36 +350,26 @@ class SAPReader:
 
         if not col_data: return pd.DataFrame()
         
-        # 1. Filtro de Tempo (6 Meses)
         df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
         data_limite = datetime.now() - pd.Timedelta(days=dias_retroativos)
         df = df[df[col_data] >= data_limite].copy()
 
-        # Limpeza Básica
         df[col_dep] = df[col_dep].astype(str).str.strip().str.upper()
-        df[col_mat] = df[col_mat].apply(lambda x: self.normalize_str(x))
-        df[col_centro] = df[col_centro].apply(lambda x: self.normalize_str(x))
+        df[col_mat] = df[col_mat].apply(self.normalize_str)
+        df[col_centro] = df[col_centro].apply(self.normalize_str)
         df['DESC_LIMPA'] = df[col_desc].astype(str).str.strip()
         
-        # 2. Resgate de ID (A Lógica H e J)
         if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
         else: df['ID_H'] = None
-        
         if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
         else: df['ID_J'] = None
-        
         df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
         
-        # 3. Matemática de Sinais (Usando o padrão SAP: Negativos = Saída)
-        # O método converter_sap_br já entende o "10-" como -10.0
         df['QTD_REAL'] = df[col_qtd].apply(self.converter_sap_br)
-        
         df['QTD_ENTRADA'] = np.where(df['QTD_REAL'] > 0, df['QTD_REAL'], 0.0)
         df['QTD_SAIDA'] = np.where(df['QTD_REAL'] < 0, df['QTD_REAL'].abs(), 0.0)
-        
         df['DATA_DIA'] = df[col_data].dt.strftime('%d/%m/%Y')
         
-        # 4. Agrupamento Final (O Extrato Limpo)
         agrupado = df.groupby(
             ['DATA_DIA', col_data, col_centro, 'ID_LIMPO', col_mat, 'DESC_LIMPA', col_dep], 
             as_index=False
@@ -372,13 +378,9 @@ class SAPReader:
             SAIDAS=('QTD_SAIDA', 'sum')
         )
 
-        # Calculo da Variação
         agrupado['VARIAÇÃO DO DIA'] = agrupado['ENTRADAS'] - agrupado['SAIDAS']
-        
-        # 5. O Filtro "Visão Líquida": Ignora onde a variação ficou em 0 (Ex: Tirou 10 e Devolveu 10)
         agrupado = agrupado[agrupado['VARIAÇÃO DO DIA'].round(3) != 0].copy()
 
-        # Formatando para Saída
         agrupado.rename(columns={
             'DATA_DIA': 'DATA OPERAÇÃO',
             col_centro: 'CENTRO',
@@ -390,7 +392,6 @@ class SAPReader:
             'SAIDAS': 'SAÍDAS LÍQUIDAS'
         }, inplace=True)
 
-        # Ordena cronologicamente para facilitar a leitura no PowerQuery
         agrupado.sort_values(by=[col_data, 'CENTRO', 'ID_RECEBEDOR', 'SKU'], inplace=True)
         agrupado.drop(columns=[col_data], inplace=True)
         
