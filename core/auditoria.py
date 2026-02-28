@@ -117,7 +117,7 @@ class AuditoriaAMED:
                         sugs.append(f"APLICAR {round(abat, 4)} EM {item['ID']}")
                         item['FALTA'] -= abat; sobra -= abat
                 
-                if sugs: l_st.append("APLICAÇÃO EXTERNA"); l_ac.append("CORREÇÃO"); l_sg.append(" | ".join(sugs))
+                if sugs: l_st.append("APLICAÇÃO"); l_ac.append("CORREÇÃO"); l_sg.append(" | ".join(sugs))
                 else: l_st.append("ESTORNO"); l_ac.append("JUSTIFICATIVA"); l_sg.append("Devolver")
 
         df_aud['STATUS'], df_aud['AÇÃO'], df_aud['SUGESTÃO'] = l_st, l_ac, l_sg
