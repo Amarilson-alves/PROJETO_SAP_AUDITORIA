@@ -17,7 +17,7 @@ def processar_tudo():
     for p in ['data', 'output', 'logs']:
         if not os.path.exists(p): os.makedirs(p)
         
-    log.info("🚀 INICIANDO AUDITORIA AMED E TORRE DE CONTROLE v17.4 (OTIMIZADO)")
+    log.info("🚀 INICIANDO AUDITORIA AMED v18.1 (CLEAN ARCHITECTURE)")
 
     try:
         config = carregar_config()
@@ -27,8 +27,11 @@ def processar_tudo():
         log.info("📥 Carregando Bases de Dados...")
         try:
             mapa_mb52, df_evidencias = reader.carregar_mapa_mb52()
-            mapa_centros = reader.carregar_mapa_centros()
             df_ald = reader.carregar_aldrei()
+            
+            df_cidades = reader.carregar_centro_cidades()
+            mapa_exec_cen, mapa_exec_dep = reader.carregar_centro_exec_amed()
+            
         except PermissionError:
             log.error("❌ ERRO DE PERMISSÃO: Feche os arquivos de entrada!"); return
 
@@ -36,11 +39,11 @@ def processar_tudo():
         try: SchemaAldrei.validate(df_ald)
         except pa.errors.SchemaError as err: log.error(f"❌ ERRO VALIDAÇÃO: {err}"); return
 
-        log.info("🌍 Mapeando Centros por ID (MB51)...")
-        mapa_geo = reader.gerar_mapa_centros_por_id()
+        log.info("🌍 Mapeando Frequência Histórica de Centros (MB51)...")
+        mapa_geo_mb51 = reader.gerar_mapa_centros_por_id()
 
-        log.info("⚙️ Processando Auditoria Cruzada...")
-        resultado = audit.processar_auditoria(df_ald, mapa_centros, mapa_mb52, mapa_geo)
+        log.info("⚙️ Processando Auditoria Cruzada (Cascata de Centros)...")
+        resultado = audit.processar_auditoria(df_ald, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_geo_mb51)
 
         log.info("☢️ Executando Motor de Auditoria Contínua...")
         df_raiox = reader.gerar_raio_x_amed(mapa_mb52) 
@@ -48,30 +51,18 @@ def processar_tudo():
         log.info("📈 Construindo Extrato Diário (Últimos 6 Meses)...")
         df_extrato = reader.gerar_extrato_diario(dias_retroativos=180)
 
-        df_meta = pd.DataFrame({
-            'CHAVE': ['DATA_EXECUCAO', 'VERSAO_ROBO', 'ARQUIVO_CONFIG', 'JANELA_EXTRATO'],
-            'VALOR': [
-                datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
-                'v17.4 (Enterprise Optimized)',
-                'config.yaml',
-                '180 Dias (Data de Lançamento)'
-            ]
-        })
-
         log.info(f"📊 Gerando Relatório Final: {config['saidas']['dashboard']}")
-        
-        # CORREÇÃO DE BUG: Loop de Retry inoperante consertado para 3 tentativas
         sucesso = False; tentativas = 0
         while not sucesso and tentativas < 3:
             try:
                 with pd.ExcelWriter(config['saidas']['dashboard'], engine='xlsxwriter') as writer:
                     
-                    df_meta.to_excel(writer, sheet_name='INFO_EXECUCAO', index=False)
-                    
+                    # 1. ABA: Auditoria Cruzada (Balanço Patrimonial)
                     resultado.to_excel(writer, sheet_name='analise auditoria', index=False)
                     try: ExcelFormatter.aplicar_formato(writer, resultado)
                     except: pass
                     
+                    # 2. ABA: Raio-X AMED (Estoque Parado)
                     if not df_raiox.empty:
                         df_raiox.sort_values(by=['SCORE_RISCO', 'VALOR_REAL'], ascending=[False, False], inplace=True)
                         df_raiox.to_excel(writer, sheet_name='RAIO_X_AMED', index=False)
@@ -81,6 +72,7 @@ def processar_tudo():
                         ws.set_column('A:A', 12); ws.set_column('P:Q', 12, fmt_num)
                         ws.set_column('R:R', 18, fmt_money); ws.set_column('S:S', 10, fmt_num)
 
+                    # 3. ABA: Extrato Diário (Fluxo Logístico)
                     if not df_extrato.empty:
                         df_extrato.to_excel(writer, sheet_name='EXTRATO_DIARIO', index=False)
                         ws_ext = writer.sheets['EXTRATO_DIARIO']

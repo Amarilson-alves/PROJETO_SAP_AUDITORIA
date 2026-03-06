@@ -5,6 +5,8 @@ arquivos:
   mb52: "data/MB52.xlsx"
   mb51: "data/MB51.xlsx"
   centros: "data/Centro.xlsx"
+  centro_cidades: "data/CENTRO - CIDADES.xlsx"
+  centro_exec_amed: "data/CENTRO - EXEC AMED.xlsx"
   aldrei: "data/Aldrei.xlsx"
   dim_movimentos: "data/dim_movimentos.csv"
 
@@ -52,7 +54,8 @@ layout_saida:
     - "QTDE APLICAR"
     - "$ VALOR UNIT"
     - "$ SALDO X QTDE"
+    - "TIPO DE DEPÓSITO"
 
-# 5. REGRAS DE NEGÓCIO (NOVO)
+# 5. REGRAS DE NEGÓCIO
 regras_negocio:
   termos_manutencao: ["MNT", "MTN", "MANUT", "REPARO", "CORRETIVA"]

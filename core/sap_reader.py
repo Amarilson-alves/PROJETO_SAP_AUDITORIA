@@ -35,6 +35,7 @@ class SAPReader:
     def extrair_id_valido(valor):
         if pd.isna(valor): return None
         texto = str(valor).strip()
+        # O filtro de números puros (Regex avançado)
         matches = re.findall(r'(?<!\d)\d{5,7}(?!\d)', texto)
         if matches: return matches[0]
         return None
@@ -51,6 +52,97 @@ class SAPReader:
             if found: return found
         return None
 
+    # --- LEITURAS DE CENTROS ---
+    def carregar_centro_cidades(self):
+        caminho = self.config['arquivos'].get('centro_cidades')
+        if not caminho or not os.path.exists(caminho): 
+            print(f"   [ERRO] Matriz Cidades não encontrada no caminho: {caminho}")
+            return pd.DataFrame()
+        
+        df_raw = pd.read_excel(caminho, engine='calamine', header=None)
+        
+        head_idx = -1
+        for i, row in df_raw.head(20).iterrows():
+            row_strs = [str(c).upper() for c in row.values]
+            if any('CÓDIGO' in c or 'CODIGO' in c for c in row_strs):
+                head_idx = i
+                break
+        
+        if head_idx == -1:
+            print("   [ERRO] Cabeçalho (CÓDIGO) não detectado na Matriz Cidades.")
+            return pd.DataFrame()
+            
+        df = df_raw.iloc[head_idx+1:].copy()
+        df.columns = [str(c).strip().upper() for c in df_raw.iloc[head_idx]]
+        
+        col_codigo = next((c for c in df.columns if 'CÓDIGO' in c or 'CODIGO' in c), None)
+        if col_codigo:
+            df[col_codigo] = df[col_codigo].apply(self.normalize_str)
+            df.set_index(col_codigo, inplace=True)
+            df = df[~df.index.duplicated(keep='first')]
+            print(f"   [SUCESSO] Matriz Cidades: {len(df)} siglas mapeadas.")
+            
+        return df
+
+    def carregar_centro_exec_amed(self):
+        caminho = self.config['arquivos'].get('centro_exec_amed')
+        if not caminho or not os.path.exists(caminho): 
+            print(f"   [ERRO] Planilha EXEC AMED não encontrada no caminho: {caminho}")
+            return {}, {}
+        
+        df = pd.read_excel(caminho, engine='calamine', header=None)
+        mapa_cen = {}
+        mapa_dep = {}
+        
+        for _, r in df.iterrows():
+            try:
+                id_val = self.normalize_str(r.iloc[12]) # Coluna M (ID)
+                cen_val = self.normalize_str(r.iloc[3])  # Coluna D (Centro)
+                dep_val = self.normalize_str(r.iloc[13]) # Coluna N (Depósito)
+                
+                if not id_val or id_val == 'ID' or id_val == 'NAN': continue
+
+                if id_val not in mapa_cen and cen_val and cen_val != 'NAN':
+                    mapa_cen[id_val] = cen_val
+
+                if dep_val and dep_val != 'NAN':
+                    if id_val not in mapa_dep: mapa_dep[id_val] = set()
+                    mapa_dep[id_val].add(dep_val)
+            except: continue
+            
+        mapa_dep_final = {k: ' | '.join(sorted(v)) for k, v in mapa_dep.items()}
+        print(f"   [SUCESSO] Matriz Exec/Amed: {len(mapa_cen)} IDs mapeados.")
+        return mapa_cen, mapa_dep_final
+
+    def gerar_mapa_centros_por_id(self):
+        caminho_mb51 = self.config['arquivos']['mb51']
+        if not os.path.exists(caminho_mb51): return {}
+
+        df = pd.read_excel(caminho_mb51, engine='calamine')
+        col_rec = self._get_col_name(df, 'recebedor')
+        col_texto = self._get_col_name(df, 'texto_cabecalho')
+        col_cen = self._get_col_name(df, 'centro')
+
+        if not col_cen: return {}
+
+        if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
+        else: df['ID_H'] = None
+        if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
+        else: df['ID_J'] = None
+
+        df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
+        df['CENTRO_LIMPO'] = df[col_cen].astype(str).str.strip()
+        
+        df = df[df['ID_LIMPO'] != 'SEM_ID']
+        
+        def get_most_frequent(x):
+            modes = x.mode()
+            return modes.iloc[0] if not modes.empty else x.iloc[0]
+            
+        mapa = df.groupby('ID_LIMPO')['CENTRO_LIMPO'].apply(get_most_frequent).to_dict()
+        return mapa
+
+    # --- LEITURAS ANTIGAS E BASES ---
     def carregar_mapa_mb52(self):
         caminho = self.config['arquivos']['mb52']
         if not os.path.exists(caminho): raise FileNotFoundError(f"MB52 não encontrada: {caminho}")
@@ -75,26 +167,9 @@ class SAPReader:
                 mapa[chave]['qtd'] += q
                 mapa[chave]['valor'] += v
                 evidencias.append({'LINHA_EXCEL': idx_original + 1, 'CENTRO': c, 'SKU': s, 'DESCRIÇÃO': desc, 'DEPÓSITO': d, 'QTD_REGISTRO': q, 'VALOR_REGISTRO': v})
-            # CORREÇÃO: Logging do erro para evitar risco silencioso
             except Exception as e: 
-                print(f"   [AVISO] MB52: Linha {idx_original+1} ignorada. Motivo: {str(e)}")
                 continue
         return mapa, pd.DataFrame(evidencias)
-
-    def carregar_mapa_centros(self):
-        caminho = self.config['arquivos']['centros']
-        if not os.path.exists(caminho): return {}
-        df = pd.read_excel(caminho, engine='calamine', header=None)
-        mapa = {}
-        idx_id = self.config['indices_fixos']['centro_col_id']
-        idx_cen = self.config['indices_fixos']['centro_col_nome']
-        start = 1 if isinstance(df.iloc[0, idx_cen], str) and 'CEN' in str(df.iloc[0, idx_cen]).upper() else 0
-        for i, row in df.iloc[start:].iterrows():
-            try:
-                k, v = self.normalize_str(row.iloc[idx_id]), self.normalize_str(row.iloc[idx_cen])
-                if k and k != 'NAN': mapa[k] = v
-            except: continue
-        return mapa
 
     def carregar_aldrei(self):
         caminho = self.config['arquivos']['aldrei']
@@ -105,37 +180,14 @@ class SAPReader:
         df.columns = [str(c).strip() for c in df_raw.iloc[head]]
         return df.loc[:, ~df.columns.str.contains('^nan$|^Unnamed', case=False, na=True)]
 
-    def gerar_mapa_centros_por_id(self):
-        caminho_mb51 = self.config['arquivos']['mb51']
-        if not os.path.exists(caminho_mb51): return {}
-
-        df = pd.read_excel(caminho_mb51, engine='calamine')
-        col_rec = self._get_col_name(df, 'recebedor')
-        col_texto = self._get_col_name(df, 'texto_cabecalho')
-        col_cen = self._get_col_name(df, 'centro')
-
-        if not col_cen: return {}
-
-        if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
-        else: df['ID_H'] = None
-        
-        if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
-        else: df['ID_J'] = None
-
-        df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
-        df['CENTRO_LIMPO'] = df[col_cen].astype(str).str.strip()
-        
-        df = df[df['ID_LIMPO'] != 'SEM_ID']
-        mapa = df.groupby('ID_LIMPO')['CENTRO_LIMPO'].apply(lambda x: ' | '.join(sorted(set(x)))).to_dict()
-        return mapa
-
+    # --- MOTORES CONTÍNUOS ---
     def gerar_raio_x_amed(self, mapa_mb52_referencia):
         caminho_mb51 = self.config['arquivos']['mb51']
         caminho_dim = self.config['arquivos']['dim_movimentos']
         
         if not os.path.exists(caminho_mb51) or not os.path.exists(caminho_dim): return pd.DataFrame()
 
-        print("   ☢️ Iniciando Motor de Auditoria Contínua...")
+        print("   ☢️ Iniciando Motor de Auditoria Contínua (Raio-X)...")
         
         df_dim = pd.read_csv(caminho_dim, sep=';', dtype=str)
         if df_dim['BWART'].duplicated().any():
@@ -169,10 +221,10 @@ class SAPReader:
         df[col_mov] = df[col_mov].astype(str).str.strip()
         df[col_dep] = df[col_dep].astype(str).str.strip().str.upper()
         
-        # CORREÇÃO: Limpeza do .apply (Mais limpo e rápido)
         df[col_mat] = df[col_mat].apply(self.normalize_str)
         df[col_centro] = df[col_centro].apply(self.normalize_str)
         
+        # 🔥 AQUI ESTÁ A LÓGICA AVANÇADA (ID nas duas colunas + Regex) IGUAL AO EXTRATO DIÁRIO!
         if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
         else: df['ID_H'] = None
         if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
@@ -194,13 +246,9 @@ class SAPReader:
         analise = []
         hoje = datetime.now()
         
-        count_ignored = 0
-        count_processed = 0
-
-        # Termos de manutenção vindos do config.yaml
         termos_manut = self.regras.get('termos_manutencao', ['MNT', 'MTN', 'MANUT', 'REPARO', 'CORRETIVA'])
 
-        print(f"   📊 Processando {len(grupos)} pilhas de estoque consolidadas (Modo Turbo - itertuples)...")
+        print(f"   📊 Processando {len(grupos)} pilhas de estoque consolidadas (Raio-X)...")
 
         for (id_dono, material, centro, deposito, lote), grupo in grupos:
             cols_sort = [col_data, col_doc]
@@ -211,7 +259,6 @@ class SAPReader:
             historico_consumo = [] 
             doc_furo = None
             
-            # CORREÇÃO: Otimização Extrema (iterrows -> itertuples)
             col_indices = {col: i for i, col in enumerate(grupo.columns)}
             
             for row_tuple in grupo.itertuples(index=False, name=None):
@@ -251,11 +298,8 @@ class SAPReader:
             tem_divergencia = (saldo_reconstruido > 0.1 and saldo_mb52 < 0.01)
 
             if saldo_reconstruido < 0.001 and id_dono != 'SEM_ID' and not doc_furo and not tem_divergencia:
-                count_ignored += 1
                 continue
             
-            count_processed += 1
-
             if pilha_estoque:
                 sobra_ref = pilha_estoque[0] 
                 dt_entrada = sobra_ref['data']
@@ -320,7 +364,6 @@ class SAPReader:
             frente = "IMPLANTAÇÃO"
             nome_empresa = str(grupo[col_nome1].iloc[0]) if col_nome1 else ''
             
-            # CORREÇÃO: Utilizando a lista limpa que veio do YAML
             if any(t in nome_empresa.upper() for t in termos_manut): frente = "MANUTENÇÃO"
             
             if id_dono == 'SEM_ID': responsavel_atual = f"USR_SAP: {user_entrada}"
@@ -359,6 +402,7 @@ class SAPReader:
         df[col_centro] = df[col_centro].apply(self.normalize_str)
         df['DESC_LIMPA'] = df[col_desc].astype(str).str.strip()
         
+        # 🔥 MESMA LÓGICA DO RAIO-X!
         if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
         else: df['ID_H'] = None
         if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
