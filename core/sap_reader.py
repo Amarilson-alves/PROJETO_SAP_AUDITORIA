@@ -35,6 +35,7 @@ class SAPReader:
     def extrair_id_valido(valor):
         if pd.isna(valor): return None
         texto = str(valor).strip()
+        # O filtro de números puros (Regex avançado)
         matches = re.findall(r'(?<!\d)\d{5,7}(?!\d)', texto)
         if matches: return matches[0]
         return None
@@ -108,7 +109,6 @@ class SAPReader:
                     if id_val not in mapa_dep: mapa_dep[id_val] = set()
                     mapa_dep[id_val].add(dep_val)
             except Exception as e:
-                # 🔴 CORREÇÃO: Log restaurado para evitar falha silenciosa
                 print(f"   [AVISO] EXEC AMED: Linha {idx+1} ignorada. Motivo: {str(e)}")
                 continue
             
@@ -137,15 +137,21 @@ class SAPReader:
         
         df = df[df['ID_LIMPO'] != 'SEM_ID']
         
-        def get_most_frequent(x):
-            # 🟡 CORREÇÃO: Documentação da Moda Estatística.
-            # NOTA: Em caso de empate na frequência (ex: operou 5x no PR01 e 5x no SC02),
-            # o x.mode() retorna múltiplos valores. O .iloc[0] garante que pegamos o primeiro
-            # da lista em ordem alfabética para desempatar e manter o comportamento determinístico.
+        # 🔥 A MÁGICA REAL AQUI: Evitamos o erro de MultiIndex do Pandas usando .agg
+        def get_principal(x):
             modes = x.mode()
             return modes.iloc[0] if not modes.empty else x.iloc[0]
             
-        mapa = df.groupby('ID_LIMPO')['CENTRO_LIMPO'].apply(get_most_frequent).to_dict()
+        def get_todos(x):
+            return " | ".join(sorted(set(x)))
+            
+        agrupado = df.groupby('ID_LIMPO').agg(
+            principal=('CENTRO_LIMPO', get_principal),
+            todos=('CENTRO_LIMPO', get_todos)
+        )
+        
+        # Agora sim o dicionário é gerado perfeitamente!
+        mapa = agrupado.to_dict('index')
         return mapa
 
     # --- LEITURAS ANTIGAS E BASES ---
@@ -174,7 +180,6 @@ class SAPReader:
                 mapa[chave]['valor'] += v
                 evidencias.append({'LINHA_EXCEL': idx_original + 1, 'CENTRO': c, 'SKU': s, 'DESCRIÇÃO': desc, 'DEPÓSITO': d, 'QTD_REGISTRO': q, 'VALOR_REGISTRO': v})
             except Exception as e: 
-                # 🔴 CORREÇÃO: Log da MB52 restaurado
                 print(f"   [AVISO] MB52: Linha {idx_original+1} ignorada. Motivo: {str(e)}")
                 continue
         return mapa, pd.DataFrame(evidencias)
@@ -276,7 +281,6 @@ class SAPReader:
                 data_mov = row_tuple[col_indices[col_data]]
                 mov = row_tuple[col_indices[col_mov]]
                 
-                # 🔴 CORREÇÃO: Prevenção contra KeyError se col_doc ou col_user forem None
                 doc_atual = row_tuple[col_indices[col_doc]] if col_doc else "-"
                 usr_atual = row_tuple[col_indices[col_user]] if col_user else "-"
 

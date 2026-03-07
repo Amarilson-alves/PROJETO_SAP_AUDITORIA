@@ -49,7 +49,7 @@ class AuditoriaAMED:
         df_aud['FRENTE ATUALIZADA'] = df_aud.apply(_saneamento_rapido, axis=1)
 
         l_centro, l_lvut, l_exec, l_amed, l_valor_amed, l_saldo = [], [], [], [], [], []
-        l_unitario_real, l_tipo_dep = [], []
+        l_unitario_real, l_tipo_dep, l_centro_mb51 = [], [], []
 
         mapa_aliados_norm = {SAPReader.normalize_str(k): v for k, v in MAPA_ALIADOS_CIDADES.items()}
         cols_cidades_limpas_super = [SAPReader.normalize_str(c).replace(" ", "") for c in df_cidades.columns] if not df_cidades.empty else []
@@ -100,9 +100,22 @@ class AuditoriaAMED:
             if not centro_final:
                 centro_final = mapa_exec_cen.get(id_b, "")
 
-            # 🌊 NÍVEL 3: Histórico Operacional (MB51 - Moda)
+            # 🌊 NÍVEL 3: Histórico Operacional (MB51)
+            # Lê o pacote de histórico que o sap_reader montou
+            hist_info = mapa_centros_mb51.get(id_b, {})
+            if isinstance(hist_info, dict):
+                centro_principal_hist = hist_info.get('principal', "")
+                centro_todos_hist = hist_info.get('todos', "")
+            else:
+                centro_principal_hist = str(hist_info)
+                centro_todos_hist = str(hist_info)
+            
+            # Guarda a visão crua e concatenada para o auditor ver no Excel
+            l_centro_mb51.append(centro_todos_hist)
+            
+            # Aplica o Fallback matemático apenas se Nível 1 e 2 falharam
             if not centro_final:
-                centro_final = mapa_centros_mb51.get(id_b, "")
+                centro_final = centro_principal_hist
                 
             if not centro_final: centro_final = "N/D"
             l_centro.append(centro_final)
@@ -131,6 +144,7 @@ class AuditoriaAMED:
 
         # Atribuição Básica
         df_aud['CENTRO'] = l_centro
+        df_aud['CENTRO MB51'] = l_centro_mb51 # 🔴 COLUNA VISUAL RESTAURADA E CRUA AQUI!
         df_aud['QTDE LVUT'], df_aud['QTDE EXEC'] = l_lvut, l_exec
         df_aud['QTDE AMED'], df_aud['$ VALOR - AMED'] = l_amed, l_valor_amed
         df_aud['POSSUI SALDO'] = l_saldo
@@ -196,7 +210,6 @@ class AuditoriaAMED:
         df_aud['RESULTADO_OPERACIONAL'] = df_aud['STATUS']
 
         # 🛡️ DEGRADAÇÃO ELEGANTE (OPÇÃO B APLICADA)
-        # As colunas financeiras e quantitativas mantêm-se como 0.0 (seguro para o Power BI / DAX)
         mask_verif = df_aud['CENTRO'] == "N/D"
         
         # Injeta o aviso "Verif.Centro" APENAS nas colunas de texto/dimensão
@@ -205,7 +218,7 @@ class AuditoriaAMED:
         df_aud.loc[mask_verif, 'AÇÃO'] = "Verif.Centro"
         df_aud.loc[mask_verif, 'SUGESTÃO'] = "Mapear Cidade/ID"
 
-        # 🔥 A Coluna extra TIPO DE DEPÓSITO entra no final da linha
+        # A Coluna extra TIPO DE DEPÓSITO entra no final da linha
         df_aud['TIPO DE DEPÓSITO'] = l_tipo_dep
 
         for col in self.cols_saida:
