@@ -5,7 +5,9 @@ import time
 import pandas as pd
 import pandera.pandas as pa
 from datetime import datetime
-from core.schemas import SchemaAldrei
+
+# Importação do novo Schema
+from core.schemas import SchemaAuditoria
 from utils.settings import carregar_config
 from core.sap_reader import SAPReader
 from core.auditoria import AuditoriaAMED
@@ -17,7 +19,7 @@ def processar_tudo():
     for p in ['data', 'output', 'logs']:
         if not os.path.exists(p): os.makedirs(p)
         
-    log.info("🚀 INICIANDO AUDITORIA AMED v18.1 (CLEAN ARCHITECTURE)")
+    log.info("🚀 INICIANDO AUDITORIA AMED v18.3 (NOVA BASE AUDITORIA & RASTREIO)")
 
     try:
         config = carregar_config()
@@ -27,7 +29,9 @@ def processar_tudo():
         log.info("📥 Carregando Bases de Dados...")
         try:
             mapa_mb52, df_evidencias = reader.carregar_mapa_mb52()
-            df_ald = reader.carregar_aldrei()
+            
+            # 🔥 Nova Chamada da Base
+            df_base = reader.carregar_base_auditoria()
             
             df_cidades = reader.carregar_centro_cidades()
             mapa_exec_cen, mapa_exec_dep = reader.carregar_centro_exec_amed()
@@ -36,14 +40,20 @@ def processar_tudo():
             log.error("❌ ERRO DE PERMISSÃO: Feche os arquivos de entrada!"); return
 
         log.info("🛡️ Validando Schema...")
-        try: SchemaAldrei.validate(df_ald)
-        except pa.errors.SchemaError as err: log.error(f"❌ ERRO VALIDAÇÃO: {err}"); return
+        try: 
+            SchemaAuditoria.validate(df_base)
+        except pa.errors.SchemaError as err: 
+            log.error(f"❌ ERRO VALIDAÇÃO: {err}"); return
 
         log.info("🌍 Mapeando Frequência Histórica de Centros (MB51)...")
         mapa_geo_mb51 = reader.gerar_mapa_centros_por_id()
 
         log.info("⚙️ Processando Auditoria Cruzada (Cascata de Centros)...")
-        resultado = audit.processar_auditoria(df_ald, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_geo_mb51)
+        resultado = audit.processar_auditoria(df_base, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_geo_mb51)
+
+        # 🔥 A Chamada do Motor Analítico alimentado pelo Resultado Limpo
+        log.info("🕵️‍♂️ Cruzando Documentos de Aplicação/Estorno...")
+        df_rastreio = reader.gerar_rastreio_aplicacoes(resultado)
 
         log.info("☢️ Executando Motor de Auditoria Contínua...")
         df_raiox = reader.gerar_raio_x_amed(mapa_mb52) 
@@ -62,17 +72,32 @@ def processar_tudo():
                     try: ExcelFormatter.aplicar_formato(writer, resultado)
                     except: pass
                     
-                    # 2. ABA: Raio-X AMED (Estoque Parado)
+                    # 2. ABA: Rastreio Operacional (A Nova Aba Lançada!)
+                    if not df_rastreio.empty:
+                        df_rastreio.to_excel(writer, sheet_name='RASTREIO_APLICACOES', index=False)
+                        wb = writer.book; ws_rast = writer.sheets['RASTREIO_APLICACOES']
+                        ws_rast.freeze_panes(1, 0)
+                        
+                        fmt_num = wb.add_format({'num_format': '#,##0.00'})
+                        fmt_red = wb.add_format({'num_format': '#,##0.00', 'font_color': '#9C0006'})
+                        fmt_green = wb.add_format({'num_format': '#,##0.00', 'font_color': '#006100'})
+                        
+                        ws_rast.set_column('A:B', 12); ws_rast.set_column('C:D', 35)
+                        ws_rast.set_column('E:F', 18); ws_rast.set_column('G:G', 16, fmt_num)
+                        ws_rast.set_column('H:J', 18, fmt_green); ws_rast.set_column('K:M', 18, fmt_red)
+                        ws_rast.set_column('N:O', 18, fmt_num); ws_rast.set_column('P:S', 22)
+                    
+                    # 3. ABA: Raio-X AMED (Estoque Parado)
                     if not df_raiox.empty:
                         df_raiox.sort_values(by=['SCORE_RISCO', 'VALOR_REAL'], ascending=[False, False], inplace=True)
                         df_raiox.to_excel(writer, sheet_name='RAIO_X_AMED', index=False)
-                        wb = writer.book; ws = writer.sheets['RAIO_X_AMED']
+                        wb = writer.book; ws_raiox = writer.sheets['RAIO_X_AMED']
                         fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
-                        fmt_num = wb.add_format({'num_format': '0'})
-                        ws.set_column('A:A', 12); ws.set_column('P:Q', 12, fmt_num)
-                        ws.set_column('R:R', 18, fmt_money); ws.set_column('S:S', 10, fmt_num)
+                        fmt_num_int = wb.add_format({'num_format': '0'})
+                        ws_raiox.set_column('A:A', 12); ws_raiox.set_column('P:Q', 12, fmt_num_int)
+                        ws_raiox.set_column('R:R', 18, fmt_money); ws_raiox.set_column('S:S', 10, fmt_num_int)
 
-                    # 3. ABA: Extrato Diário (Fluxo Logístico)
+                    # 4. ABA: Extrato Diário (Fluxo Logístico)
                     if not df_extrato.empty:
                         df_extrato.to_excel(writer, sheet_name='EXTRATO_DIARIO', index=False)
                         ws_ext = writer.sheets['EXTRATO_DIARIO']

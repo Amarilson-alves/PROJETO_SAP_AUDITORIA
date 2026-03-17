@@ -7,7 +7,7 @@ arquivos:
   centros: "data/Centro.xlsx"
   centro_cidades: "data/CENTRO - CIDADES.xlsx"
   centro_exec_amed: "data/CENTRO - EXEC AMED.xlsx"
-  aldrei: "data/Aldrei.xlsx"
+  base_auditoria: "data/auditoria.xlsx"
   dim_movimentos: "data/dim_movimentos.csv"
 
 # 2. ARQUIVOS DE SAÍDA

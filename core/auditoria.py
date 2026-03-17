@@ -87,8 +87,7 @@ class AuditoriaAMED:
                     col_oficial_excel = df_cidades.columns[idx_col]
                     
                     val = df_cidades.loc[sigla, col_oficial_excel]
-                    # Proteção: Caso o drop_duplicates seja removido no leitor (sap_reader), 
-                    # o loc pode retornar uma pd.Series. O iloc[0] blinda o código pegando o primeiro.
+                    # Proteção contra series
                     if isinstance(val, pd.Series): val = val.iloc[0] 
                     
                     if pd.notna(val):
@@ -101,7 +100,6 @@ class AuditoriaAMED:
                 centro_final = mapa_exec_cen.get(id_b, "")
 
             # 🌊 NÍVEL 3: Histórico Operacional (MB51)
-            # Lê o pacote de histórico que o sap_reader montou
             hist_info = mapa_centros_mb51.get(id_b, {})
             if isinstance(hist_info, dict):
                 centro_principal_hist = hist_info.get('principal', "")
@@ -110,22 +108,18 @@ class AuditoriaAMED:
                 centro_principal_hist = str(hist_info)
                 centro_todos_hist = str(hist_info)
             
-            # Guarda a visão crua e concatenada para o auditor ver no Excel
             l_centro_mb51.append(centro_todos_hist)
             
-            # Aplica o Fallback matemático apenas se Nível 1 e 2 falharam
             if not centro_final:
                 centro_final = centro_principal_hist
                 
             if not centro_final: centro_final = "N/D"
             l_centro.append(centro_final)
 
-            # 📦 Guarda o Tipo de Depósito
             l_tipo_dep.append(mapa_exec_dep.get(id_b, "-"))
 
             # --- Busca na MB52 ---
             if centro_final == "N/D":
-                # Valores em branco/zero puros para não quebrar o Power BI
                 l_lvut.append(0.0); l_exec.append(0.0); l_amed.append(0.0)
                 l_valor_amed.append(0.0); l_saldo.append("NÃO"); l_unitario_real.append(0.0)
             else:
@@ -144,7 +138,7 @@ class AuditoriaAMED:
 
         # Atribuição Básica
         df_aud['CENTRO'] = l_centro
-        df_aud['CENTRO MB51'] = l_centro_mb51 # 🔴 COLUNA VISUAL RESTAURADA E CRUA AQUI!
+        df_aud['CENTRO MB51'] = l_centro_mb51 
         df_aud['QTDE LVUT'], df_aud['QTDE EXEC'] = l_lvut, l_exec
         df_aud['QTDE AMED'], df_aud['$ VALOR - AMED'] = l_amed, l_valor_amed
         df_aud['POSSUI SALDO'] = l_saldo
@@ -153,7 +147,6 @@ class AuditoriaAMED:
         # 3. Financeiro
         for c in ['APL x DRAFT', 'APL x MEDIÇÃO']: df_aud[c] = pd.to_numeric(df_aud[c], errors='coerce').fillna(0)
         
-        # Vetorização pura para a Vivo sem o apply demorado
         if col_aliado:
             mask_vivo = df_aud[col_aliado].astype(str).str.upper().str.contains('VIVO', na=False)
         else:
@@ -167,7 +160,6 @@ class AuditoriaAMED:
         # 4. Auditoria Lógica (Status)
         livro_faltas = {}
         
-        # Vetorização para Status ID
         if col_status_id:
             mask_ativos = df_aud[col_status_id].astype(str).str.upper() != "CANCELADO"
         else:
