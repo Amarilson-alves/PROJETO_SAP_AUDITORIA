@@ -87,7 +87,8 @@ class AuditoriaAMED:
                     col_oficial_excel = df_cidades.columns[idx_col]
                     
                     val = df_cidades.loc[sigla, col_oficial_excel]
-                    # Proteção contra series
+                    # Proteção: Caso o drop_duplicates seja removido no leitor (sap_reader), 
+                    # o loc pode retornar uma pd.Series. O iloc[0] blinda o código pegando o primeiro.
                     if isinstance(val, pd.Series): val = val.iloc[0] 
                     
                     if pd.notna(val):
@@ -129,7 +130,9 @@ class AuditoriaAMED:
 
                 l_lvut.append(d_lvut['qtd']); l_exec.append(d_exec['qtd']); l_amed.append(d_amed['qtd'])
                 l_valor_amed.append(d_amed['valor']) 
-                l_saldo.append("SIM" if (d_lvut['qtd']>0 or d_exec['qtd']>0 or d_amed['qtd']>0) else "NÃO")
+                
+                # 🔥 CORREÇÃO 1 APLICADA AQUI: Ignora LVUT para definir se "Possui Saldo"
+                l_saldo.append("SIM" if (d_exec['qtd'] > 0 or d_amed['qtd'] > 0) else "NÃO")
 
                 qtd_total = d_lvut['qtd'] + d_exec['qtd'] + d_amed['qtd']
                 val_total = d_lvut['valor'] + d_exec['valor'] + d_amed['valor']
