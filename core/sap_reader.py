@@ -1,4 +1,5 @@
 # core/sap_reader.py
+import logging
 import pandas as pd
 import numpy as np
 import os
@@ -6,21 +7,24 @@ import re
 import unicodedata
 from datetime import datetime
 
+
 class SAPReader:
-    def __init__(self, config):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.cols_cfg = config.get('colunas_sap', {})
         self.regras = config.get('regras_negocio', {})
+        self.log = logging.getLogger('SAP_Auditoria')
+        self._mb51_cache: pd.DataFrame | None = None
 
     @staticmethod
-    def normalize_str(s):
+    def normalize_str(s) -> str:
         if pd.isna(s): return ""
         s = unicodedata.normalize('NFKD', str(s))
         texto = "".join(c for c in s if not unicodedata.combining(c)).upper().strip()
         return texto[:-2] if texto.endswith('.0') else texto
 
     @staticmethod
-    def converter_sap_br(valor):
+    def converter_sap_br(valor) -> float:
         if pd.isna(valor) or str(valor).strip() == "": return 0.0
         if isinstance(valor, (int, float)): return float(valor)
         texto = str(valor).strip().upper().replace('R$', '').replace(' ', '')
@@ -32,73 +36,95 @@ class SAPReader:
         except: return 0.0
 
     @staticmethod
-    def extrair_id_valido(valor):
+    def extrair_id_valido(valor) -> str | None:
         if pd.isna(valor): return None
         texto = str(valor).strip()
         matches = re.findall(r'(?<!\d)\d{5,7}(?!\d)', texto)
         if matches: return matches[0]
         return None
 
-    def _get_col_name(self, df, chave_config):
+    def _get_col_name(self, df: pd.DataFrame, chave_config: str) -> str | None:
         padroes = self.cols_cfg.get(chave_config, [])
         if not padroes:
             if chave_config == 'recebedor': padroes = ['RECEBEDOR', 'RECEP.', 'WEMPF']
             elif chave_config == 'texto_cabecalho': padroes = ['TEXTO CABEÇALHO', 'TEXTO', 'SGTXT', 'BKTXT']
             else: return None
-        
+
         for pat in padroes:
             found = next((c for c in df.columns if pat.upper() in str(c).upper()), None)
             if found: return found
         return None
 
+    def _carregar_mb51(self) -> pd.DataFrame:
+        """Carrega o MB51 uma única vez e mantém em cache durante a execução."""
+        if self._mb51_cache is None:
+            caminho = self.config['arquivos'].get('mb51', '')
+            if not caminho or not os.path.exists(caminho):
+                self._mb51_cache = pd.DataFrame()
+            else:
+                self._mb51_cache = pd.read_excel(caminho, engine='calamine')
+                self.log.info(f"MB51 carregado em cache: {len(self._mb51_cache)} linhas.")
+        return self._mb51_cache.copy()
+
+    def _extrair_id_limpo(self, df: pd.DataFrame, col_rec: str | None, col_texto: str | None) -> pd.Series:
+        """Extrai ID do recebedor ou texto de cabeçalho, com fallback para 'SEM_ID'."""
+        id_h = df[col_rec].apply(self.extrair_id_valido) if col_rec else pd.Series(pd.NA, index=df.index)
+        id_j = df[col_texto].apply(self.extrair_id_valido) if col_texto else pd.Series(pd.NA, index=df.index)
+        return id_h.combine_first(id_j).fillna('SEM_ID')
+
     # --- LEITURAS DE CENTROS ---
-    def carregar_centro_cidades(self):
+    def carregar_centro_cidades(self) -> pd.DataFrame:
         caminho = self.config['arquivos'].get('centro_cidades')
-        if not caminho or not os.path.exists(caminho): 
-            print(f"   [ERRO] Matriz Cidades não encontrada no caminho: {caminho}")
+        if not caminho or not os.path.exists(caminho):
+            self.log.error(f"Matriz Cidades não encontrada: {caminho}")
             return pd.DataFrame()
-        
+
         df_raw = pd.read_excel(caminho, engine='calamine', header=None)
-        
+
         head_idx = -1
         for i, row in df_raw.head(20).iterrows():
             row_strs = [str(c).upper() for c in row.values]
             if any('CÓDIGO' in c or 'CODIGO' in c for c in row_strs):
                 head_idx = i
                 break
-        
+
         if head_idx == -1:
-            print("   [ERRO] Cabeçalho (CÓDIGO) não detectado na Matriz Cidades.")
+            self.log.error("Cabeçalho (CÓDIGO) não detectado na Matriz Cidades.")
             return pd.DataFrame()
-            
+
         df = df_raw.iloc[head_idx+1:].copy()
         df.columns = [str(c).strip().upper() for c in df_raw.iloc[head_idx]]
-        
+
         col_codigo = next((c for c in df.columns if 'CÓDIGO' in c or 'CODIGO' in c), None)
         if col_codigo:
             df[col_codigo] = df[col_codigo].apply(self.normalize_str)
             df.set_index(col_codigo, inplace=True)
             df = df[~df.index.duplicated(keep='first')]
-            print(f"   [SUCESSO] Matriz Cidades: {len(df)} siglas mapeadas.")
-            
+            self.log.info(f"Matriz Cidades: {len(df)} siglas mapeadas.")
+
         return df
 
-    def carregar_centro_exec_amed(self):
+    def carregar_centro_exec_amed(self) -> tuple[dict, dict]:
         caminho = self.config['arquivos'].get('centro_exec_amed')
-        if not caminho or not os.path.exists(caminho): 
-            print(f"   [ERRO] Planilha EXEC AMED não encontrada no caminho: {caminho}")
+        if not caminho or not os.path.exists(caminho):
+            self.log.error(f"Planilha EXEC AMED não encontrada: {caminho}")
             return {}, {}
-        
+
+        idx_fixos = self.config.get('indices_fixos', {})
+        idx_id  = idx_fixos.get('centro_col_id',  12)
+        idx_cen = idx_fixos.get('centro_col_nome',  3)
+        idx_dep = idx_fixos.get('centro_col_dep',  13)
+
         df = pd.read_excel(caminho, engine='calamine', header=None)
         mapa_cen = {}
         mapa_dep = {}
-        
+
         for idx, r in df.iterrows():
             try:
-                id_val = self.normalize_str(r.iloc[12])
-                cen_val = self.normalize_str(r.iloc[3])
-                dep_val = self.normalize_str(r.iloc[13])
-                
+                id_val  = self.normalize_str(r.iloc[idx_id])
+                cen_val = self.normalize_str(r.iloc[idx_cen])
+                dep_val = self.normalize_str(r.iloc[idx_dep])
+
                 if not id_val or id_val == 'ID' or id_val == 'NAN': continue
 
                 if id_val not in mapa_cen and cen_val and cen_val != 'NAN':
@@ -108,51 +134,43 @@ class SAPReader:
                     if id_val not in mapa_dep: mapa_dep[id_val] = set()
                     mapa_dep[id_val].add(dep_val)
             except Exception as e:
-                print(f"   [AVISO] EXEC AMED: Linha {idx+1} ignorada. Motivo: {str(e)}")
+                self.log.warning(f"EXEC AMED: Linha {idx+1} ignorada. Motivo: {e}")
                 continue
-            
+
         mapa_dep_final = {k: ' | '.join(sorted(v)) for k, v in mapa_dep.items()}
-        print(f"   [SUCESSO] Matriz Exec/Amed: {len(mapa_cen)} IDs mapeados.")
+        self.log.info(f"Matriz Exec/Amed: {len(mapa_cen)} IDs mapeados.")
         return mapa_cen, mapa_dep_final
 
-    def gerar_mapa_centros_por_id(self):
-        caminho_mb51 = self.config['arquivos']['mb51']
-        if not os.path.exists(caminho_mb51): return {}
+    def gerar_mapa_centros_por_id(self) -> dict:
+        df = self._carregar_mb51()
+        if df.empty:
+            return {}
 
-        df = pd.read_excel(caminho_mb51, engine='calamine')
-        col_rec = self._get_col_name(df, 'recebedor')
-        col_texto = self._get_col_name(df, 'texto_cabecalho')
-        col_cen = self._get_col_name(df, 'centro')
+        col_rec    = self._get_col_name(df, 'recebedor')
+        col_texto  = self._get_col_name(df, 'texto_cabecalho')
+        col_cen    = self._get_col_name(df, 'centro')
 
         if not col_cen: return {}
 
-        if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
-        else: df['ID_H'] = None
-        if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
-        else: df['ID_J'] = None
-
-        df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
+        df['ID_LIMPO']     = self._extrair_id_limpo(df, col_rec, col_texto)
         df['CENTRO_LIMPO'] = df[col_cen].astype(str).str.strip()
-        
         df = df[df['ID_LIMPO'] != 'SEM_ID']
-        
+
         def get_principal(x):
             modes = x.mode()
             return modes.iloc[0] if not modes.empty else x.iloc[0]
-            
+
         def get_todos(x):
             return " | ".join(sorted(set(x)))
-            
+
         agrupado = df.groupby('ID_LIMPO').agg(
             principal=('CENTRO_LIMPO', get_principal),
             todos=('CENTRO_LIMPO', get_todos)
         )
-        
-        mapa = agrupado.to_dict('index')
-        return mapa
+        return agrupado.to_dict('index')
 
     # --- LEITURAS ANTIGAS E BASES ---
-    def carregar_mapa_mb52(self):
+    def carregar_mapa_mb52(self) -> tuple[dict, pd.DataFrame]:
         caminho = self.config['arquivos']['mb52']
         if not os.path.exists(caminho): raise FileNotFoundError(f"MB52 não encontrada: {caminho}")
         df_raw = pd.read_excel(caminho, engine='calamine', header=None)
@@ -162,90 +180,79 @@ class SAPReader:
                 start = i; break
         df = df_raw.iloc[start+1:].copy()
         mapa = {}
-        evidencias = [] 
+        evidencias = []
         for idx_original, r in df.iterrows():
             try:
-                c = self.normalize_str(r.iloc[0])
-                s = self.normalize_str(r.iloc[1])
-                d = self.normalize_str(r.iloc[4])
+                c    = self.normalize_str(r.iloc[0])
+                s    = self.normalize_str(r.iloc[1])
+                d    = self.normalize_str(r.iloc[4])
                 desc = str(r.iloc[2]).strip()
-                q = self.converter_sap_br(r.iloc[5])
-                v = self.converter_sap_br(r.iloc[6])
+                q    = self.converter_sap_br(r.iloc[5])
+                v    = self.converter_sap_br(r.iloc[6])
                 chave = (s, c, d)
                 if chave not in mapa: mapa[chave] = {'qtd': 0.0, 'valor': 0.0}
-                mapa[chave]['qtd'] += q
+                mapa[chave]['qtd']   += q
                 mapa[chave]['valor'] += v
                 evidencias.append({'LINHA_EXCEL': idx_original + 1, 'CENTRO': c, 'SKU': s, 'DESCRIÇÃO': desc, 'DEPÓSITO': d, 'QTD_REGISTRO': q, 'VALOR_REGISTRO': v})
-            except Exception as e: 
-                print(f"   [AVISO] MB52: Linha {idx_original+1} ignorada. Motivo: {str(e)}")
+            except Exception as e:
+                self.log.warning(f"MB52: Linha {idx_original+1} ignorada. Motivo: {e}")
                 continue
         return mapa, pd.DataFrame(evidencias)
-    
-    # 🔥 CORREÇÃO: Função com limpeza de linhas fantasmas
-    def carregar_base_auditoria(self):
+
+    def carregar_base_auditoria(self) -> pd.DataFrame:
         caminho = self.config['arquivos'].get('base_auditoria')
         if not caminho or not os.path.exists(caminho): raise FileNotFoundError(f"Base Auditoria não encontrada: {caminho}")
-        
         df_raw = pd.read_excel(caminho, engine='calamine', header=None)
         head = next(i for i, row in df_raw.head(20).iterrows() if 'SKU' in [str(c).upper() for c in row.values])
         df = df_raw.iloc[head+1:].reset_index(drop=True)
         df.columns = [str(c).strip() for c in df_raw.iloc[head]]
-        
-        # 1. Remove colunas vazias
+
         df = df.loc[:, ~df.columns.str.contains('^nan$|^Unnamed', case=False, na=True)]
-        
-        # 2. Remove linhas fantasmas (onde o SKU está vazio/NaN)
         if 'SKU' in df.columns:
             df = df.dropna(subset=['SKU']).copy()
-            
+
         return df
 
     # --- MOTORES CONTÍNUOS ---
-    def gerar_raio_x_amed(self, mapa_mb52_referencia):
-        caminho_mb51 = self.config['arquivos']['mb51']
+    def gerar_raio_x_amed(self, mapa_mb52_referencia: dict) -> pd.DataFrame:
         caminho_dim = self.config['arquivos']['dim_movimentos']
-        
-        if not os.path.exists(caminho_mb51) or not os.path.exists(caminho_dim): return pd.DataFrame()
 
-        print("   ☢️ Iniciando Motor de Auditoria Contínua (Raio-X)...")
-        
+        df = self._carregar_mb51()
+        if df.empty or not os.path.exists(caminho_dim):
+            return pd.DataFrame()
+
+        self.log.info("Iniciando Motor de Auditoria Contínua (Raio-X)...")
+
         df_dim = pd.read_csv(caminho_dim, sep=';', dtype=str)
         df_dim['BWART'] = df_dim['BWART'].str.strip()
         if 'TIPO_ESPECIAL' not in df_dim.columns: df_dim['TIPO_ESPECIAL'] = 'PADRAO'
         lista_saida = df_dim[df_dim['SENTIDO_AMED'] == 'SAIDA']['BWART'].unique()
-        
-        df = pd.read_excel(caminho_mb51, engine='calamine')
 
         col_centro = self._get_col_name(df, 'centro')
-        col_dep = self._get_col_name(df, 'deposito')
-        col_mat = self._get_col_name(df, 'material')
-        col_desc = self._get_col_name(df, 'descricao')
-        col_qtd = self._get_col_name(df, 'quantidade')
-        col_val = self._get_col_name(df, 'valor')
-        col_data = self._get_col_name(df, 'data_lanc')
-        col_mov = self._get_col_name(df, 'movimento')
-        col_rec = self._get_col_name(df, 'recebedor')
-        col_texto = self._get_col_name(df, 'texto_cabecalho') 
-        col_doc = self._get_col_name(df, 'documento')
-        col_item = self._get_col_name(df, 'item')
-        col_user = self._get_col_name(df, 'usuario')
-        col_lote = self._get_col_name(df, 'lote')
-        col_nome1 = self._get_col_name(df, 'nome1')
+        col_dep    = self._get_col_name(df, 'deposito')
+        col_mat    = self._get_col_name(df, 'material')
+        col_desc   = self._get_col_name(df, 'descricao')
+        col_qtd    = self._get_col_name(df, 'quantidade')
+        col_val    = self._get_col_name(df, 'valor')
+        col_data   = self._get_col_name(df, 'data_lanc')
+        col_mov    = self._get_col_name(df, 'movimento')
+        col_rec    = self._get_col_name(df, 'recebedor')
+        col_texto  = self._get_col_name(df, 'texto_cabecalho')
+        col_doc    = self._get_col_name(df, 'documento')
+        col_item   = self._get_col_name(df, 'item')
+        col_user   = self._get_col_name(df, 'usuario')
+        col_lote   = self._get_col_name(df, 'lote')
+        col_nome1  = self._get_col_name(df, 'nome1')
 
         if col_data: df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
-        
-        df[col_mov] = df[col_mov].astype(str).str.strip()
-        df[col_dep] = df[col_dep].astype(str).str.strip().str.upper()
-        
-        df[col_mat] = df[col_mat].apply(self.normalize_str)
+
+        df[col_mov]    = df[col_mov].astype(str).str.strip()
+        df[col_dep]    = df[col_dep].astype(str).str.strip().str.upper()
+        df[col_mat]    = df[col_mat].apply(self.normalize_str)
         df[col_centro] = df[col_centro].apply(self.normalize_str)
-        
-        if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
-        else: df['ID_H'] = None
-        if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
-        else: df['ID_J'] = None
-        df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
-        
+
+        df['ID_LIMPO'] = self._extrair_id_limpo(df, col_rec, col_texto)
+
         if col_lote:
             df['LOTE_LIMPO'] = df[col_lote].fillna('SEM_LOTE').astype(str).str.strip()
             df.loc[df['LOTE_LIMPO'] == '', 'LOTE_LIMPO'] = 'SEM_LOTE'
@@ -256,38 +263,36 @@ class SAPReader:
         df_merged['SENTIDO_REAL'] = np.where(df_merged[col_dep].str.contains('AMED', na=False), df_merged['SENTIDO_AMED'], 'NEUTRO')
 
         df_proc = df_merged[df_merged['SENTIDO_REAL'] != 'NEUTRO'].copy()
-        grupos = df_proc.groupby(['ID_LIMPO', col_mat, col_centro, col_dep, 'LOTE_LIMPO'])
+        grupos  = df_proc.groupby(['ID_LIMPO', col_mat, col_centro, col_dep, 'LOTE_LIMPO'])
         analise = []
-        hoje = datetime.now()
-        
-        termos_manut = self.regras.get('termos_manutencao', ['MNT', 'MTN', 'MANUT', 'REPARO', 'CORRETIVA'])
+        hoje    = datetime.now()
 
-        print(f"   📊 Processando {len(grupos)} pilhas de estoque consolidadas (Raio-X)...")
+        termos_manut = self.regras.get('termos_manutencao', ['MNT', 'MTN', 'MANUT', 'REPARO', 'CORRETIVA'])
+        self.log.info(f"Processando {len(grupos)} pilhas de estoque consolidadas (Raio-X)...")
 
         for (id_dono, material, centro, deposito, lote), grupo in grupos:
             cols_sort = [col_data, col_doc]
             if col_item: cols_sort.append(col_item)
             grupo = grupo.sort_values(by=cols_sort)
 
-            pilha_estoque = []
-            historico_consumo = [] 
-            doc_furo = None
-            
+            pilha_estoque    = []
+            historico_consumo = []
+            doc_furo         = None
+
             col_indices = {col: i for i, col in enumerate(grupo.columns)}
-            
+
             for row_tuple in grupo.itertuples(index=False, name=None):
-                qtd = abs(self.converter_sap_br(row_tuple[col_indices[col_qtd]]))
-                val_total = abs(self.converter_sap_br(row_tuple[col_indices[col_val]])) if col_val else 0
-                sentido = row_tuple[col_indices['SENTIDO_REAL']]
+                qtd        = abs(self.converter_sap_br(row_tuple[col_indices[col_qtd]]))
+                val_total  = abs(self.converter_sap_br(row_tuple[col_indices[col_val]])) if col_val else 0
+                sentido    = row_tuple[col_indices['SENTIDO_REAL']]
                 tipo_especial = str(row_tuple[col_indices['TIPO_ESPECIAL']])
-                data_mov = row_tuple[col_indices[col_data]]
-                mov = row_tuple[col_indices[col_mov]]
-                
-                doc_atual = row_tuple[col_indices[col_doc]] if col_doc else "-"
-                usr_atual = row_tuple[col_indices[col_user]] if col_user else "-"
+                data_mov   = row_tuple[col_indices[col_data]]
+                mov        = row_tuple[col_indices[col_mov]]
+                doc_atual  = row_tuple[col_indices[col_doc]]  if col_doc  else "-"
+                usr_atual  = row_tuple[col_indices[col_user]] if col_user else "-"
 
                 if sentido == 'ENTRADA':
-                    valor_unit = (val_total / qtd) if qtd > 0 else 0
+                    valor_unit     = (val_total / qtd) if qtd > 0 else 0
                     status_entrada = "OK"
                     if tipo_especial == 'ESTORNO':
                         tem_consumo_previo = any((h['mov'] in lista_saida) and (h['data'] <= data_mov) for h in historico_consumo)
@@ -308,21 +313,21 @@ class SAPReader:
                     if qtd_a_baixar > 0.001 and doc_furo is None: doc_furo = f"{mov}-{doc_atual}"
 
             saldo_reconstruido = sum(item['qtd'] for item in pilha_estoque)
-            chave_mb52 = (material, centro, deposito)
-            saldo_mb52 = mapa_mb52_referencia.get(chave_mb52, {}).get('qtd', 0)
+            chave_mb52  = (material, centro, deposito)
+            saldo_mb52  = mapa_mb52_referencia.get(chave_mb52, {}).get('qtd', 0)
             tem_divergencia = (saldo_reconstruido > 0.1 and saldo_mb52 < 0.01)
 
             if saldo_reconstruido < 0.001 and id_dono != 'SEM_ID' and not doc_furo and not tem_divergencia:
                 continue
-            
+
             if pilha_estoque:
-                sobra_ref = pilha_estoque[0] 
-                dt_entrada = sobra_ref['data']
-                mov_entrada = sobra_ref['mov']
-                tipo_entrada = sobra_ref['tipo_especial']
-                doc_entrada = sobra_ref['doc']
-                user_entrada = sobra_ref['user']
-                status_origem = sobra_ref['status_audit']
+                sobra_ref        = pilha_estoque[0]
+                dt_entrada       = sobra_ref['data']
+                mov_entrada      = sobra_ref['mov']
+                tipo_entrada     = sobra_ref['tipo_especial']
+                doc_entrada      = sobra_ref['doc']
+                user_entrada     = sobra_ref['user']
+                status_origem    = sobra_ref['status_audit']
                 valor_real_parado = sum(item['qtd'] * item['valor_unit'] for item in pilha_estoque)
                 aging = (hoje - dt_entrada).days if pd.notnull(dt_entrada) else 0
             else:
@@ -331,11 +336,11 @@ class SAPReader:
                 status_origem = "OK"
 
             status_lista = []
-            score_risco = 0
-            causa = "INDEFINIDA"
-            tipo_acao = "OPERACIONAL"
-            acao = "Monitorar"
-            log_detalhe = []
+            score_risco  = 0
+            causa        = "INDEFINIDA"
+            tipo_acao    = "OPERACIONAL"
+            acao         = "Monitorar"
+            log_detalhe  = []
             dt_fmt = dt_entrada.strftime('%d/%m/%Y') if pd.notnull(dt_entrada) else "-"
 
             if tem_divergencia:
@@ -361,61 +366,55 @@ class SAPReader:
                 log_detalhe.append(f"[PROCEDIMENTO] {mov_entrada} sem saída prévia.")
 
             status_final = " + ".join(status_lista) if status_lista else "PENDENTE"
-            log_final = " | ".join(log_detalhe) if log_detalhe else f"Entrada regular via {mov_entrada}."
-            
-            frente = "IMPLANTAÇÃO"
+            log_final    = " | ".join(log_detalhe)  if log_detalhe  else f"Entrada regular via {mov_entrada}."
+
+            frente       = "IMPLANTAÇÃO"
             nome_empresa = str(grupo[col_nome1].iloc[0]) if col_nome1 else ''
-            
             if any(t in nome_empresa.upper() for t in termos_manut): frente = "MANUTENÇÃO"
-            
-            if id_dono == 'SEM_ID': responsavel_atual = f"USR_SAP: {user_entrada}"
-            else: responsavel_atual = nome_empresa
-            desc_material = str(grupo[col_desc].iloc[0]) if col_desc else ''
+
+            responsavel_atual = f"USR_SAP: {user_entrada}" if id_dono == 'SEM_ID' else nome_empresa
+            desc_material     = str(grupo[col_desc].iloc[0]) if col_desc else ''
 
             analise.append({'SCORE_RISCO': score_risco, 'STATUS': status_final, 'TIPO_AÇÃO': tipo_acao, 'CAUSA_RAIZ': causa, 'AÇÃO_SUGERIDA': acao, 'RESPONSÁVEL_ATUAL': responsavel_atual, 'LOG_AUDITORIA': log_final, 'FRENTE': frente, 'ID_RECEBEDOR': id_dono, 'NOME_PARCEIRO': nome_empresa, 'MATERIAL': material, 'DESCRIÇÃO': desc_material, 'CENTRO': centro, 'DEPÓSITO': deposito, 'LOTE': lote, 'SALDO_RECONSTRUÍDO': saldo_reconstruido, 'SALDO_MB52_REF': saldo_mb52, 'VALOR_REAL': valor_real_parado, 'AGING_DIAS': aging, 'DT_REF_AGING': dt_fmt, 'DOC_ORIGEM': f"{mov_entrada}-{doc_entrada}", 'RESPONSÁVEL_MOV': user_entrada})
 
         return pd.DataFrame(analise)
 
-    def gerar_extrato_diario(self, dias_retroativos=180):
-        caminho_mb51 = self.config['arquivos']['mb51']
-        if not os.path.exists(caminho_mb51): return pd.DataFrame()
+    def gerar_extrato_diario(self, dias_retroativos: int = 180) -> pd.DataFrame:
+        df = self._carregar_mb51()
+        if df.empty:
+            return pd.DataFrame()
 
-        print(f"   📅 Gerando Extrato Diário da Operação (Últimos {dias_retroativos} dias)...")
-        df = pd.read_excel(caminho_mb51, engine='calamine')
+        self.log.info(f"Gerando Extrato Diário da Operação (Últimos {dias_retroativos} dias)...")
 
         col_centro = self._get_col_name(df, 'centro')
-        col_dep = self._get_col_name(df, 'deposito')
-        col_mat = self._get_col_name(df, 'material')
-        col_desc = self._get_col_name(df, 'descricao')
-        col_qtd = self._get_col_name(df, 'quantidade')
-        col_data = self._get_col_name(df, 'data_lanc')
-        col_rec = self._get_col_name(df, 'recebedor')
-        col_texto = self._get_col_name(df, 'texto_cabecalho')
+        col_dep    = self._get_col_name(df, 'deposito')
+        col_mat    = self._get_col_name(df, 'material')
+        col_desc   = self._get_col_name(df, 'descricao')
+        col_qtd    = self._get_col_name(df, 'quantidade')
+        col_data   = self._get_col_name(df, 'data_lanc')
+        col_rec    = self._get_col_name(df, 'recebedor')
+        col_texto  = self._get_col_name(df, 'texto_cabecalho')
 
         if not col_data: return pd.DataFrame()
-        
+
         df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
-        data_limite = datetime.now() - pd.Timedelta(days=dias_retroativos)
+        data_limite  = datetime.now() - pd.Timedelta(days=dias_retroativos)
         df = df[df[col_data] >= data_limite].copy()
 
-        df[col_dep] = df[col_dep].astype(str).str.strip().str.upper()
-        df[col_mat] = df[col_mat].apply(self.normalize_str)
+        df[col_dep]    = df[col_dep].astype(str).str.strip().str.upper()
+        df[col_mat]    = df[col_mat].apply(self.normalize_str)
         df[col_centro] = df[col_centro].apply(self.normalize_str)
         df['DESC_LIMPA'] = df[col_desc].astype(str).str.strip()
-        
-        if col_rec: df['ID_H'] = df[col_rec].apply(self.extrair_id_valido)
-        else: df['ID_H'] = None
-        if col_texto: df['ID_J'] = df[col_texto].apply(self.extrair_id_valido)
-        else: df['ID_J'] = None
-        df['ID_LIMPO'] = df['ID_H'].combine_first(df['ID_J']).fillna('SEM_ID')
-        
-        df['QTD_REAL'] = df[col_qtd].apply(self.converter_sap_br)
+
+        df['ID_LIMPO'] = self._extrair_id_limpo(df, col_rec, col_texto)
+
+        df['QTD_REAL']    = df[col_qtd].apply(self.converter_sap_br)
         df['QTD_ENTRADA'] = np.where(df['QTD_REAL'] > 0, df['QTD_REAL'], 0.0)
-        df['QTD_SAIDA'] = np.where(df['QTD_REAL'] < 0, df['QTD_REAL'].abs(), 0.0)
-        df['DATA_DIA'] = df[col_data].dt.strftime('%d/%m/%Y')
-        
+        df['QTD_SAIDA']   = np.where(df['QTD_REAL'] < 0, df['QTD_REAL'].abs(), 0.0)
+        df['DATA_DIA']    = df[col_data].dt.strftime('%d/%m/%Y')
+
         agrupado = df.groupby(
-            ['DATA_DIA', col_data, col_centro, 'ID_LIMPO', col_mat, 'DESC_LIMPA', col_dep], 
+            ['DATA_DIA', col_data, col_centro, 'ID_LIMPO', col_mat, 'DESC_LIMPA', col_dep],
             as_index=False
         ).agg(
             ENTRADAS=('QTD_ENTRADA', 'sum'),
@@ -426,57 +425,50 @@ class SAPReader:
         agrupado = agrupado[agrupado['VARIAÇÃO DO DIA'].round(3) != 0].copy()
 
         agrupado.rename(columns={
-            'DATA_DIA': 'DATA OPERAÇÃO',
-            col_centro: 'CENTRO',
-            'ID_LIMPO': 'ID_RECEBEDOR',
-            col_mat: 'SKU',
+            'DATA_DIA':   'DATA OPERAÇÃO',
+            col_centro:   'CENTRO',
+            'ID_LIMPO':   'ID_RECEBEDOR',
+            col_mat:      'SKU',
             'DESC_LIMPA': 'DESCRIÇÃO',
-            col_dep: 'DEPÓSITO',
-            'ENTRADAS': 'ENTRADAS LÍQUIDAS',
-            'SAIDAS': 'SAÍDAS LÍQUIDAS'
+            col_dep:      'DEPÓSITO',
+            'ENTRADAS':   'ENTRADAS LÍQUIDAS',
+            'SAIDAS':     'SAÍDAS LÍQUIDAS'
         }, inplace=True)
 
         agrupado.sort_values(by=[col_data, 'CENTRO', 'ID_RECEBEDOR', 'SKU'], inplace=True)
         agrupado.drop(columns=[col_data], inplace=True)
         return agrupado
 
-    # --- 🟢 O NOVO MOTOR DE RASTREIO DE APLICAÇÕES ---
-    def gerar_rastreio_aplicacoes(self, df_auditoria):
-        caminho_mb51 = self.config['arquivos']['mb51']
-        if not os.path.exists(caminho_mb51): return pd.DataFrame()
+    def gerar_rastreio_aplicacoes(self, df_auditoria: pd.DataFrame) -> pd.DataFrame:
+        df = self._carregar_mb51()
+        if df.empty:
+            return pd.DataFrame()
 
-        print("   🔍 Acionando Motor Analítico: Rastreio de Documentos (MB51)...")
-        df = pd.read_excel(caminho_mb51, engine='calamine')
+        self.log.info("Acionando Motor Analítico: Rastreio de Documentos (MB51)...")
 
         col_centro = self._get_col_name(df, 'centro')
-        col_mat = self._get_col_name(df, 'material')
-        col_qtd = self._get_col_name(df, 'quantidade')
-        col_mov = self._get_col_name(df, 'movimento')
-        col_rec = self._get_col_name(df, 'recebedor')
-        col_texto = self._get_col_name(df, 'texto_cabecalho')
-        col_doc = self._get_col_name(df, 'documento')
+        col_mat    = self._get_col_name(df, 'material')
+        col_qtd    = self._get_col_name(df, 'quantidade')
+        col_mov    = self._get_col_name(df, 'movimento')
+        col_rec    = self._get_col_name(df, 'recebedor')
+        col_texto  = self._get_col_name(df, 'texto_cabecalho')
+        col_doc    = self._get_col_name(df, 'documento')
 
         df[col_mov] = df[col_mov].astype(str).str.strip().str.upper()
-        
-        # Filtro estrito nas aplicações e estornos vitais
+
         movs_alvo = ['261', '262', 'Z81', 'Z82']
         df_filtro = df[df[col_mov].isin(movs_alvo)].copy()
 
         if df_filtro.empty:
-            print("   ⚠️ Nenhum movimento de aplicação/estorno encontrado na MB51.")
+            self.log.warning("Nenhum movimento de aplicação/estorno encontrado na MB51.")
             return pd.DataFrame()
 
-        df_filtro[col_mat] = df_filtro[col_mat].apply(self.normalize_str)
+        df_filtro[col_mat]    = df_filtro[col_mat].apply(self.normalize_str)
         df_filtro[col_centro] = df_filtro[col_centro].apply(self.normalize_str)
-        df_filtro[col_qtd] = df_filtro[col_qtd].apply(self.converter_sap_br).abs()
-        df_filtro[col_doc] = df_filtro[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        df_filtro[col_qtd]    = df_filtro[col_qtd].apply(self.converter_sap_br).abs()
+        df_filtro[col_doc]    = df_filtro[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
 
-        if col_rec: df_filtro['ID_H'] = df_filtro[col_rec].apply(self.extrair_id_valido)
-        else: df_filtro['ID_H'] = None
-        if col_texto: df_filtro['ID_J'] = df_filtro[col_texto].apply(self.extrair_id_valido)
-        else: df_filtro['ID_J'] = None
-        df_filtro['ID_LIMPO'] = df_filtro['ID_H'].combine_first(df_filtro['ID_J']).fillna('SEM_ID')
-
+        df_filtro['ID_LIMPO'] = self._extrair_id_limpo(df_filtro, col_rec, col_texto)
         df_filtro = df_filtro[df_filtro['ID_LIMPO'] != 'SEM_ID']
 
         df_filtro['QTD_261'] = np.where(df_filtro[col_mov] == '261', df_filtro[col_qtd], 0.0)
@@ -507,7 +499,7 @@ class SAPReader:
 
         agrupado.rename(columns={
             'ID_LIMPO': 'ID_STR', col_mat: 'SKU_STR',
-            'CENTRO_APLICADO': 'CENTRO APLICADO SAP',
+            'CENTRO_APLICADO':  'CENTRO APLICADO SAP',
             'QTD_261': 'QTD APLICADA 261', 'QTD_Z81': 'QTD APLICADA Z81',
             'QTD_262': 'QTD ESTORNADA 262', 'QTD_Z82': 'QTD ESTORNADA Z82',
             'DOCS_261': 'DOCS APLIC. 261', 'DOCS_Z81': 'DOCS APLIC. Z81',
@@ -515,36 +507,34 @@ class SAPReader:
         }, inplace=True)
 
         df_base = df_auditoria.copy()
-        df_base['ID_STR'] = df_base['ID'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.upper()
+        df_base['ID_STR']  = df_base['ID'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.upper()
         df_base['SKU_STR'] = df_base['SKU'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.upper()
 
         rastreio = pd.merge(df_base, agrupado, on=['ID_STR', 'SKU_STR'], how='left')
 
         cols_num = ['QTD APLICADA 261', 'QTD APLICADA Z81', 'QTD ESTORNADA 262', 'QTD ESTORNADA Z82']
         for c in cols_num: rastreio[c] = rastreio[c].fillna(0.0)
-            
+
         cols_txt = ['CENTRO APLICADO SAP', 'DOCS APLIC. 261', 'DOCS APLIC. Z81', 'DOCS ESTORNO 262', 'DOCS ESTORNO Z82']
         for c in cols_txt: rastreio[c] = rastreio[c].fillna("-")
 
         rastreio['TOTAL APLICADO BRUTO'] = rastreio['QTD APLICADA 261'] + rastreio['QTD APLICADA Z81']
-        rastreio['TOTAL ESTORNADO'] = rastreio['QTD ESTORNADA 262'] + rastreio['QTD ESTORNADA Z82']
-        rastreio['QTD LÍQUIDA SAP'] = rastreio['TOTAL APLICADO BRUTO'] - rastreio['TOTAL ESTORNADO']
-        
+        rastreio['TOTAL ESTORNADO']      = rastreio['QTD ESTORNADA 262'] + rastreio['QTD ESTORNADA Z82']
+        rastreio['QTD LÍQUIDA SAP']      = rastreio['TOTAL APLICADO BRUTO'] - rastreio['TOTAL ESTORNADO']
+
         qtd_aplicar_num = pd.to_numeric(rastreio['QTDE APLICAR'], errors='coerce').fillna(0.0)
         rastreio['META DE APLICAÇÃO'] = np.where(qtd_aplicar_num < 0, qtd_aplicar_num.abs(), 0.0)
+        rastreio['SALDO PENDENTE']    = rastreio['META DE APLICAÇÃO'] - rastreio['QTD LÍQUIDA SAP']
 
-        rastreio['SALDO PENDENTE'] = rastreio['META DE APLICAÇÃO'] - rastreio['QTD LÍQUIDA SAP']
-
-        c_desc = next((c for c in rastreio.columns if 'DESCRI' in str(c).upper()), 'Descrição')
+        c_desc   = next((c for c in rastreio.columns if 'DESCRI' in str(c).upper()), 'Descrição')
         c_aliado = next((c for c in rastreio.columns if 'ALIADO' in str(c).upper()), 'Aliado')
-        
+
         rastreio.rename(columns={
-            c_desc: 'DESCRIÇÃO',
+            c_desc:   'DESCRIÇÃO',
             c_aliado: 'ALIADO',
             'CENTRO': 'CENTRO PLANEJADO'
         }, inplace=True)
-        
-        # Layout Final
+
         cols_to_keep = [
             'ID', 'SKU', 'DESCRIÇÃO', 'ALIADO', 'CENTRO PLANEJADO', 'CENTRO APLICADO SAP',
             'META DE APLICAÇÃO', 'QTD APLICADA 261', 'QTD APLICADA Z81', 'TOTAL APLICADO BRUTO',
@@ -552,14 +542,126 @@ class SAPReader:
             'QTD LÍQUIDA SAP', 'SALDO PENDENTE',
             'DOCS APLIC. 261', 'DOCS APLIC. Z81', 'DOCS ESTORNO 262', 'DOCS ESTORNO Z82'
         ]
-        
-        cols_final = [c for c in cols_to_keep if c in rastreio.columns]
-        rastreio_final = rastreio[cols_final]
-        
-        mask_relevante = (rastreio_final['META DE APLICAÇÃO'] > 0) | (rastreio_final['TOTAL APLICADO BRUTO'] > 0) | (rastreio_final['TOTAL ESTORNADO'] > 0)
-        rastreio_final = rastreio_final[mask_relevante].copy()
-        
-        rastreio_final.sort_values(by=['ALIADO', 'ID'], inplace=True)
 
-        print(f"   🎯 Concluído! Rastreabilidade cruzada: {len(rastreio_final)} materiais encontrados.")
+        cols_final    = [c for c in cols_to_keep if c in rastreio.columns]
+        rastreio_final = rastreio[cols_final]
+
+        mask_relevante = (
+            (rastreio_final['META DE APLICAÇÃO'] > 0) |
+            (rastreio_final['TOTAL APLICADO BRUTO'] > 0) |
+            (rastreio_final['TOTAL ESTORNADO'] > 0)
+        )
+        rastreio_final = rastreio_final[mask_relevante].copy()
+
+        sort_cols = [c for c in ['ALIADO', 'ID'] if c in rastreio_final.columns]
+        if sort_cols:
+            rastreio_final.sort_values(by=sort_cols, inplace=True)
+
+        self.log.info(f"Rastreabilidade cruzada concluída: {len(rastreio_final)} materiais encontrados.")
         return rastreio_final
+
+    # --- RADAR DE PREVENÇÃO DE PERDAS (ENTRADAS 311) ---
+    def gerar_monitor_entradas_311(self, df_auditoria: pd.DataFrame) -> pd.DataFrame:
+        cols_finais = [
+            'DATA TRANSFERÊNCIA', 'CENTRO', 'DEPÓSITO DESTINO', 'ID RECEBEDOR',
+            '🔴 ALERTA DE CONFORMIDADE', 'EPS / ALIADO', 'FRENTE DE ATUAÇÃO', 'USUÁRIO SAP',
+            'SKU', 'DESCRIÇÃO', 'QTD TRANSFERIDA', 'DOC. MATERIAL'
+        ]
+
+        df = self._carregar_mb51()
+        if df.empty:
+            return pd.DataFrame(columns=cols_finais)
+
+        self.log.info("Acionando Radar de Prevenção de Perdas: Entradas 311 (Últimos 7 dias)...")
+
+        col_centro = self._get_col_name(df, 'centro')
+        col_dep    = self._get_col_name(df, 'deposito')
+        col_mat    = self._get_col_name(df, 'material')
+        col_desc   = self._get_col_name(df, 'descricao')
+        col_qtd    = self._get_col_name(df, 'quantidade')
+        col_data   = self._get_col_name(df, 'data_lanc')
+        col_mov    = self._get_col_name(df, 'movimento')
+        col_rec    = self._get_col_name(df, 'recebedor')
+        col_texto  = self._get_col_name(df, 'texto_cabecalho')
+        col_doc    = self._get_col_name(df, 'documento')
+        col_user   = self._get_col_name(df, 'usuario')
+
+        if not col_data: return pd.DataFrame(columns=cols_finais)
+
+        df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
+        data_limite  = datetime.now() - pd.Timedelta(days=7)
+        df = df[df[col_data] >= data_limite].copy()
+
+        df[col_mov] = df[col_mov].astype(str).str.strip()
+        df[col_dep] = df[col_dep].astype(str).str.strip().str.upper()
+        df[col_qtd] = df[col_qtd].apply(self.converter_sap_br)
+
+        mask_311 = df[col_mov] == '311'
+        mask_pos = df[col_qtd] > 0
+        mask_dep = df[col_dep].isin(['EXEC', 'AMED'])
+
+        df_filtro = df[mask_311 & mask_pos & mask_dep].copy()
+
+        if df_filtro.empty:
+            self.log.info("Radar Limpo: Nenhuma transferência 311 para EXEC/AMED nos últimos 7 dias.")
+            return pd.DataFrame(columns=cols_finais)
+
+        df_filtro[col_mat]    = df_filtro[col_mat].apply(self.normalize_str)
+        df_filtro[col_centro] = df_filtro[col_centro].apply(self.normalize_str)
+        df_filtro[col_doc]    = df_filtro[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+
+        df_filtro['DATA TRANSFERÊNCIA'] = df_filtro[col_data].dt.strftime('%d/%m/%Y')
+        df_filtro['USUÁRIO SAP']        = df_filtro[col_user].astype(str).str.strip() if col_user else "-"
+        df_filtro['DESCRIÇÃO']          = df_filtro[col_desc].astype(str).str.strip() if col_desc else "-"
+
+        df_filtro['ID_LIMPO'] = self._extrair_id_limpo(df_filtro, col_rec, col_texto)
+
+        df_filtro['🔴 ALERTA DE CONFORMIDADE'] = np.where(
+            df_filtro['ID_LIMPO'] == 'SEM_ID',
+            '🚨 MATERIAL ÓRFÃO (SEM ID)',
+            '✅ OK'
+        )
+
+        df_lookup = df_auditoria.copy()
+
+        col_id_aud     = next((c for c in df_lookup.columns if str(c).strip().upper() == 'ID'), None)
+        col_aliado_aud = next((c for c in df_lookup.columns if str(c).strip().upper() == 'ALIADO'), None)
+        col_frente_aud = next((c for c in df_lookup.columns if str(c).strip().upper() == 'FRENTE ATUALIZADA'), None)
+
+        if col_id_aud:
+            df_lookup['ID_MATCH'] = df_lookup[col_id_aud].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.upper()
+            df_lookup = df_lookup.drop_duplicates(subset=['ID_MATCH'])
+
+            cols_to_keep = ['ID_MATCH']
+            if col_aliado_aud: cols_to_keep.append(col_aliado_aud)
+            if col_frente_aud: cols_to_keep.append(col_frente_aud)
+            df_lookup = df_lookup[cols_to_keep]
+
+            rastreio = pd.merge(df_filtro, df_lookup, left_on='ID_LIMPO', right_on='ID_MATCH', how='left')
+            rastreio['EPS / ALIADO']      = rastreio[col_aliado_aud].fillna('NÃO IDENTIFICADA') if col_aliado_aud else 'NÃO IDENTIFICADA'
+            rastreio['FRENTE DE ATUAÇÃO'] = rastreio[col_frente_aud].fillna('DESCONHECIDA')     if col_frente_aud else 'DESCONHECIDA'
+        else:
+            rastreio = df_filtro.copy()
+            rastreio['EPS / ALIADO']      = 'NÃO IDENTIFICADA'
+            rastreio['FRENTE DE ATUAÇÃO'] = 'DESCONHECIDA'
+
+        rastreio.rename(columns={
+            col_centro: 'CENTRO',
+            col_dep:    'DEPÓSITO DESTINO',
+            'ID_LIMPO': 'ID RECEBEDOR',
+            col_mat:    'SKU',
+            col_qtd:    'QTD TRANSFERIDA',
+            col_doc:    'DOC. MATERIAL'
+        }, inplace=True)
+
+        mask_orfao = rastreio['ID RECEBEDOR'] == 'SEM_ID'
+        rastreio.loc[mask_orfao, 'EPS / ALIADO']      = 'NÃO IDENTIFICADA'
+        rastreio.loc[mask_orfao, 'FRENTE DE ATUAÇÃO'] = 'DESCONHECIDA'
+
+        for c in cols_finais:
+            if c not in rastreio.columns: rastreio[c] = "-"
+
+        final_df = rastreio[cols_finais].sort_values(by=['DATA TRANSFERÊNCIA', 'CENTRO'], ascending=[False, True])
+
+        self.log.info(f"Radar Concluído: {len(final_df)} transferências monitoradas.")
+        return final_df

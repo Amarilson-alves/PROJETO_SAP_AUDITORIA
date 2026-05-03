@@ -4,7 +4,6 @@
 arquivos:
   mb52: "data/MB52.xlsx"
   mb51: "data/MB51.xlsx"
-  centros: "data/Centro.xlsx"
   centro_cidades: "data/CENTRO - CIDADES.xlsx"
   centro_exec_amed: "data/CENTRO - EXEC AMED.xlsx"
   base_auditoria: "data/auditoria.xlsx"
@@ -17,8 +16,9 @@ saidas:
 
 # 3. REGRAS DE LEITURA
 indices_fixos:
-  centro_col_id: 10
-  centro_col_nome: 3
+  centro_col_id: 12    # Coluna ID na planilha EXEC AMED
+  centro_col_nome: 3   # Coluna Centro
+  centro_col_dep: 13   # Coluna Depósito
 
 # 4. MAPEAMENTO DE COLUNAS SAP
 colunas_sap:

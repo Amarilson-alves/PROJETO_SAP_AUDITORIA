@@ -2,25 +2,19 @@
 import pandas as pd
 import re
 
-# Importação limpa e direta das regras de negócio do arquivo oficial
+pd.set_option('future.no_silent_downcasting', True)
+
 from utils.mapping import FRENTES_PADRAO, MAPEAMENTO_FRENTE, MAPA_ALIADOS_CIDADES
 from core.sap_reader import SAPReader
 
 class AuditoriaAMED:
-    def __init__(self, config):
+    def __init__(self, config: dict) -> None:
         self.config = config
         self.cols_saida = config['layout_saida']['colunas_finais']
 
-    # Função de segurança: Busca a coluna ignorando maiúsculas/minúsculas e espaços
-    def _get_val(self, row, target_col):
-        target = str(target_col).strip().upper()
-        for col in row.index:
-            if str(col).strip().upper() == target:
-                return row[col]
-        return ""
-
-    def processar_auditoria(self, df_aud, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_centros_mb51={}):
-        pd.set_option('future.no_silent_downcasting', True)
+    def processar_auditoria(self, df_aud, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_centros_mb51=None):
+        if mapa_centros_mb51 is None:
+            mapa_centros_mb51 = {}
         
         # Mapeamento de colunas em O(1) antes do loop
         col_map = {str(c).strip().upper(): c for c in df_aud.columns}

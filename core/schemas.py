@@ -15,9 +15,3 @@ SchemaAuditoria = pa.DataFrameSchema({
     "APL x DRAFT": Column(float, required=False, coerce=True, nullable=True), 
     "APL x MEDIÇÃO": Column(float, required=False, coerce=True, nullable=True),
 })
-
-# Contrato da Planilha MB52
-SchemaMB52 = pa.DataFrameSchema({
-    "Material": Column(str, required=False),
-    "Centro": Column(str, required=False),
-})
