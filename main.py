@@ -44,8 +44,11 @@ def processar_tudo():
         log.info("🌍 Mapeando Frequência Histórica de Centros (MB51)...")
         mapa_geo_mb51 = reader.gerar_mapa_centros_por_id()
 
+        log.info("📄 Mapeando Documentos de Aplicação/Estorno por ID+SKU (MB51)...")
+        mapa_docs_aud = reader.gerar_mapa_docs_auditoria()
+
         log.info("⚙️ Processando Auditoria Cruzada (Cascata de Centros)...")
-        resultado = audit.processar_auditoria(df_base, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_geo_mb51)
+        resultado = audit.processar_auditoria(df_base, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_geo_mb51, mapa_docs_aud)
 
         log.info("🕵️‍♂️ Cruzando Documentos de Aplicação/Estorno...")
         df_rastreio = reader.gerar_rastreio_aplicacoes(resultado)

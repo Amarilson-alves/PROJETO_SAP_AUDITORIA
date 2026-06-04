@@ -55,6 +55,11 @@ layout_saida:
     - "$ VALOR UNIT"
     - "$ SALDO X QTDE"
     - "TIPO DE DEPÓSITO"
+    - "DOC APLICAÇÃO"
+    - "DOC ESTORNO"
+    - "ESTORNO 2025"
+    - "DOC ESTORNO 2025"
+    - "POSSÍVEL DE-PARA"
 
 # 5. REGRAS DE NEGÓCIO
 regras_negocio:

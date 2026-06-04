@@ -141,6 +141,99 @@ class SAPReader:
         self.log.info(f"Matriz Exec/Amed: {len(mapa_cen)} IDs mapeados.")
         return mapa_cen, mapa_dep_final
 
+    def gerar_mapa_docs_auditoria(self) -> dict:
+        """Retorna {(id_limpo, sku_limpo): {...}} com docs e qtds por tipo de movimento (261/Z81/262/Z82/501)."""
+        df = self._carregar_mb51()
+        if df.empty:
+            return {}
+
+        col_rec   = self._get_col_name(df, 'recebedor')
+        col_texto = self._get_col_name(df, 'texto_cabecalho')
+        col_mat   = self._get_col_name(df, 'material')
+        col_qtd   = self._get_col_name(df, 'quantidade')
+        col_mov   = self._get_col_name(df, 'movimento')
+        col_doc   = self._get_col_name(df, 'documento')
+        col_data  = self._get_col_name(df, 'data_lanc')
+        col_cen   = self._get_col_name(df, 'centro')
+
+        if not all([col_mat, col_qtd, col_mov, col_doc]):
+            self.log.warning("gerar_mapa_docs_auditoria: colunas essenciais não encontradas na MB51.")
+            return {}
+
+        df[col_mov] = df[col_mov].astype(str).str.strip().str.upper()
+        df[col_mat] = df[col_mat].apply(self.normalize_str)
+        df[col_doc] = df[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        df[col_qtd] = df[col_qtd].apply(self.converter_sap_br).abs()
+        if col_data:
+            df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
+        if col_cen:
+            df[col_cen] = df[col_cen].astype(str).str.strip()
+
+        df['ID_LIMPO'] = self._extrair_id_limpo(df, col_rec, col_texto)
+        df = df[df['ID_LIMPO'] != 'SEM_ID'].copy()
+
+        movs_alvo = ['261', 'Z81', '262', 'Z82', '501']
+        df = df[df[col_mov].isin(movs_alvo)].copy()
+
+        if df.empty:
+            return {}
+
+        def _join_docs(x):
+            vals = sorted(set(str(v) for v in x if pd.notna(v) and str(v).strip() not in ('', 'nan')))
+            return ' | '.join(vals) if vals else ''
+
+        def _tem_2025(x):
+            return any(pd.notna(d) and hasattr(d, 'year') and d.year == 2025 for d in x)
+
+        df['QTD_261'] = np.where(df[col_mov] == '261', df[col_qtd], 0.0)
+        df['QTD_Z81'] = np.where(df[col_mov] == 'Z81', df[col_qtd], 0.0)
+        df['QTD_262'] = np.where(df[col_mov] == '262', df[col_qtd], 0.0)
+        df['QTD_Z82'] = np.where(df[col_mov] == 'Z82', df[col_qtd], 0.0)
+
+        df['DOC_261'] = np.where(df[col_mov] == '261', df[col_doc], None)
+        df['DOC_Z81'] = np.where(df[col_mov] == 'Z81', df[col_doc], None)
+        df['DOC_262'] = np.where(df[col_mov] == '262', df[col_doc], None)
+        df['DOC_Z82'] = np.where(df[col_mov] == 'Z82', df[col_doc], None)
+        df['DOC_501'] = np.where(df[col_mov] == '501', df[col_doc], None)
+
+        cen_series = df[col_cen] if col_cen else pd.Series('', index=df.index)
+        df['CEN_501'] = np.where(df[col_mov] == '501', cen_series, None)
+
+        if col_data:
+            mask_aplic = df[col_mov].isin(['261', 'Z81'])
+            df['DATA_APLIC'] = df[col_data].where(mask_aplic, other=pd.NaT)
+        else:
+            df['DATA_APLIC'] = pd.NaT
+
+        agrupado = df.groupby(['ID_LIMPO', col_mat]).agg(
+            qtd_261=('QTD_261', 'sum'),
+            qtd_z81=('QTD_Z81', 'sum'),
+            qtd_262=('QTD_262', 'sum'),
+            qtd_z82=('QTD_Z82', 'sum'),
+            docs_261=('DOC_261', _join_docs),
+            docs_z81=('DOC_Z81', _join_docs),
+            docs_262=('DOC_262', _join_docs),
+            docs_z82=('DOC_Z82', _join_docs),
+            docs_501=('DOC_501', _join_docs),
+            centros_501=('CEN_501', _join_docs),
+            data_aplic_2025=('DATA_APLIC', _tem_2025),
+        ).reset_index()
+
+        mapa = {}
+        for _, row in agrupado.iterrows():
+            key = (row['ID_LIMPO'], row[col_mat])
+            mapa[key] = {
+                'qtd_261': row['qtd_261'], 'qtd_z81': row['qtd_z81'],
+                'qtd_262': row['qtd_262'], 'qtd_z82': row['qtd_z82'],
+                'docs_261': row['docs_261'], 'docs_z81': row['docs_z81'],
+                'docs_262': row['docs_262'], 'docs_z82': row['docs_z82'],
+                'docs_501': row['docs_501'], 'centros_501': row['centros_501'],
+                'data_aplic_2025': row['data_aplic_2025'],
+            }
+
+        self.log.info(f"Mapa de documentos auditoria: {len(mapa)} combinações (ID, SKU) indexadas.")
+        return mapa
+
     def gerar_mapa_centros_por_id(self) -> dict:
         df = self._carregar_mb51()
         if df.empty:

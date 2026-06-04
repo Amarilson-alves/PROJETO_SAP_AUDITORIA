@@ -12,7 +12,7 @@ class AuditoriaAMED:
         self.config = config
         self.cols_saida = config['layout_saida']['colunas_finais']
 
-    def processar_auditoria(self, df_aud, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_centros_mb51=None):
+    def processar_auditoria(self, df_aud, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_centros_mb51=None, mapa_docs_aud=None):
         if mapa_centros_mb51 is None:
             mapa_centros_mb51 = {}
         
@@ -197,6 +197,95 @@ class AuditoriaAMED:
 
         df_aud['STATUS'], df_aud['AÇÃO'], df_aud['SUGESTÃO'] = l_st, l_ac, l_sg
         df_aud['RESULTADO_OPERACIONAL'] = df_aud['STATUS']
+
+        # 5. Enriquecimento Documental (DOC APLICAÇÃO / DOC ESTORNO / ESTORNO 2025 / DE-PARA)
+        _colunas_doc = ['DOC APLICAÇÃO', 'DOC ESTORNO', 'ESTORNO 2025', 'DOC ESTORNO 2025', 'POSSÍVEL DE-PARA']
+        if mapa_docs_aud:
+            l_doc_aplic, l_doc_est, l_est_2025, l_doc_est_2025 = [], [], [], []
+
+            for idx, r in df_aud.iterrows():
+                id_b   = r['ID_STR']
+                sku_b  = r['SKU_STR']
+                saldo  = r['SALDO_AUDIT']
+                is_vivo = mask_vivo.loc[idx]
+                info   = mapa_docs_aud.get((id_b, sku_b), {})
+
+                # DOC APLICAÇÃO — apenas para FALTA (saldo < 0)
+                if saldo < 0:
+                    qtd_n    = round(abs(saldo), 4)
+                    chv_qtd  = 'qtd_z81'  if is_vivo else 'qtd_261'
+                    chv_doc  = 'docs_z81' if is_vivo else 'docs_261'
+                    qtd_a    = round(info.get(chv_qtd, 0), 4)
+                    docs     = info.get(chv_doc, '')
+                    l_doc_aplic.append(docs if docs and abs(qtd_a - qtd_n) < 0.01 else '-')
+                else:
+                    l_doc_aplic.append('-')
+
+                # DOC ESTORNO — apenas para ESTORNO (saldo > 0)
+                if saldo > 0:
+                    qtd_n    = round(abs(saldo), 4)
+                    chv_qtd  = 'qtd_z82'  if is_vivo else 'qtd_262'
+                    chv_doc  = 'docs_z82' if is_vivo else 'docs_262'
+                    qtd_r    = round(info.get(chv_qtd, 0), 4)
+                    docs     = info.get(chv_doc, '')
+                    l_doc_est.append(docs if docs and abs(qtd_r - qtd_n) < 0.01 else '-')
+                else:
+                    l_doc_est.append('-')
+
+                # ESTORNO 2025 — saldo > 0 E aplicação original foi em 2025
+                if saldo > 0 and info.get('data_aplic_2025', False):
+                    docs_501  = info.get('docs_501', '')
+                    cents_501 = info.get('centros_501', '')
+                    if docs_501:
+                        cents = [c.strip() for c in cents_501.split('|')
+                                 if c.strip() and c.strip().lower() != 'nan']
+                        all_f = bool(cents) and all(c.upper().startswith('F') for c in cents)
+                        l_est_2025.append('SIM' if all_f else 'IRREGULAR')
+                        l_doc_est_2025.append(docs_501)
+                    else:
+                        l_est_2025.append('NÃO')
+                        l_doc_est_2025.append('-')
+                else:
+                    l_est_2025.append('-')
+                    l_doc_est_2025.append('-')
+
+            df_aud['DOC APLICAÇÃO']    = l_doc_aplic
+            df_aud['DOC ESTORNO']      = l_doc_est
+            df_aud['ESTORNO 2025']     = l_est_2025
+            df_aud['DOC ESTORNO 2025'] = l_doc_est_2025
+
+            # POSSÍVEL DE-PARA — segundo loop (cross-row): FALTA sem aplicação, mas mesmo ID
+            # tem outro SKU aplicado na MB51 com qtd equivalente e sem FALTA própria
+            mb51_por_id = {}
+            for (id_k, sku_k), inf in mapa_docs_aud.items():
+                qtd_a = inf.get('qtd_261', 0) + inf.get('qtd_z81', 0)
+                if qtd_a > 0:
+                    mb51_por_id.setdefault(id_k, {})[sku_k] = round(qtd_a, 4)
+
+            faltas_aud = {(r['ID_STR'], r['SKU_STR'])
+                          for _, r in df_aud[df_aud['SALDO_AUDIT'] < 0].iterrows()}
+
+            l_de_para = []
+            for _, r in df_aud.iterrows():
+                id_b  = r['ID_STR']
+                sku_b = r['SKU_STR']
+                saldo = r['SALDO_AUDIT']
+                if saldo < 0:
+                    qtd_n  = round(abs(saldo), 4)
+                    achado = next(
+                        (sku for sku, qtd in mb51_por_id.get(id_b, {}).items()
+                         if sku != sku_b
+                         and abs(qtd - qtd_n) < 0.01
+                         and (id_b, sku) not in faltas_aud),
+                        None)
+                    l_de_para.append(f'Possível De Para: {achado}' if achado else '-')
+                else:
+                    l_de_para.append('-')
+
+            df_aud['POSSÍVEL DE-PARA'] = l_de_para
+        else:
+            for col in _colunas_doc:
+                df_aud[col] = 'N/A'
 
         # 🛡️ DEGRADAÇÃO ELEGANTE (OPÇÃO B APLICADA)
         mask_verif = df_aud['CENTRO'] == "N/D"
