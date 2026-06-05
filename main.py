@@ -1,10 +1,8 @@
 # main.py
 import os
-import sys
 import time
 import pandas as pd
 import pandera.pandas as pa
-from datetime import datetime
 
 from core.schemas import SchemaAuditoria
 from utils.settings import carregar_config
@@ -41,76 +39,82 @@ def processar_tudo():
         except pa.errors.SchemaError as err: 
             log.error(f"❌ ERRO VALIDAÇÃO: {err}"); return
 
-        log.info("🌍 Mapeando Frequência Histórica de Centros (MB51)...")
-        mapa_geo_mb51 = reader.gerar_mapa_centros_por_id()
-
-        log.info("📄 Mapeando Documentos de Aplicação/Estorno por ID+SKU (MB51)...")
-        mapa_docs_aud = reader.gerar_mapa_docs_auditoria()
+        log.info("🌍 Processando MB51: Centros históricos + Documentos de aplicação/estorno...")
+        t0 = time.time()
+        mapa_geo_mb51, mapa_docs_aud = reader.gerar_mapas_mb51()
+        log.info(f"   MB51 processado em {time.time()-t0:.1f}s — {len(mapa_geo_mb51)} IDs | {len(mapa_docs_aud)} (ID,SKU)")
 
         log.info("⚙️ Processando Auditoria Cruzada (Cascata de Centros)...")
+        t0 = time.time()
         resultado = audit.processar_auditoria(df_base, df_cidades, mapa_exec_cen, mapa_exec_dep, mapa_mb52, mapa_geo_mb51, mapa_docs_aud)
+        log.info(f"   Auditoria concluída em {time.time()-t0:.1f}s — {len(resultado)} linhas")
 
         log.info("🕵️‍♂️ Cruzando Documentos de Aplicação/Estorno...")
-        df_rastreio = reader.gerar_rastreio_aplicacoes(resultado)
+        t0 = time.time()
+        df_rastreio = reader.gerar_rastreio_aplicacoes(resultado, mapa_docs_aud)
+        log.info(f"   Rastreio concluído em {time.time()-t0:.1f}s")
 
         log.info("🚨 Verificando Radar de Prevenção de Perdas (Entradas 311)...")
+        t0 = time.time()
         df_monitor = reader.gerar_monitor_entradas_311(resultado)
+        log.info(f"   Monitor concluído em {time.time()-t0:.1f}s")
 
         log.info("☢️ Executando Motor de Auditoria Contínua...")
-        df_raiox = reader.gerar_raio_x_amed(mapa_mb52) 
-        
+        t0 = time.time()
+        df_raiox = reader.gerar_raio_x_amed(mapa_mb52)
+        log.info(f"   Raio-X concluído em {time.time()-t0:.1f}s")
+
         log.info("📈 Construindo Extrato Diário (Últimos 6 Meses)...")
+        t0 = time.time()
         df_extrato = reader.gerar_extrato_diario(dias_retroativos=180)
+        log.info(f"   Extrato concluído em {time.time()-t0:.1f}s")
 
         log.info(f"📊 Gerando Relatório Final: {config['saidas']['dashboard']}")
         sucesso = False; tentativas = 0
         while not sucesso and tentativas < 3:
             try:
                 with pd.ExcelWriter(config['saidas']['dashboard'], engine='xlsxwriter') as writer:
-                    
+                    wb = writer.book
+
+                    # Formatos reutilizáveis declarados uma única vez
+                    fmt_num     = wb.add_format({'num_format': '#,##0.00'})
+                    fmt_red     = wb.add_format({'num_format': '#,##0.00', 'font_color': '#9C0006'})
+                    fmt_green   = wb.add_format({'num_format': '#,##0.00', 'font_color': '#006100'})
+                    fmt_money   = wb.add_format({'num_format': 'R$ #,##0.00'})
+                    fmt_num_int = wb.add_format({'num_format': '0'})
+
                     # 1. ABA: Auditoria Cruzada (Balanço Patrimonial)
                     resultado.to_excel(writer, sheet_name='analise auditoria', index=False)
                     try:
                         ExcelFormatter.aplicar_formato(writer, resultado)
                     except Exception as e:
                         log.warning(f"⚠️ Formatação Excel não aplicada: {e}")
-                    
+
                     # 2. ABA: Rastreio Operacional
                     if not df_rastreio.empty:
                         df_rastreio.to_excel(writer, sheet_name='RASTREIO_APLICACOES', index=False)
-                        wb = writer.book; ws_rast = writer.sheets['RASTREIO_APLICACOES']
+                        ws_rast = writer.sheets['RASTREIO_APLICACOES']
                         ws_rast.freeze_panes(1, 0)
-                        
-                        fmt_num = wb.add_format({'num_format': '#,##0.00'})
-                        fmt_red = wb.add_format({'num_format': '#,##0.00', 'font_color': '#9C0006'})
-                        fmt_green = wb.add_format({'num_format': '#,##0.00', 'font_color': '#006100'})
-                        
                         ws_rast.set_column('A:B', 12); ws_rast.set_column('C:D', 35)
                         ws_rast.set_column('E:F', 18); ws_rast.set_column('G:G', 16, fmt_num)
                         ws_rast.set_column('H:J', 18, fmt_green); ws_rast.set_column('K:M', 18, fmt_red)
                         ws_rast.set_column('N:O', 18, fmt_num); ws_rast.set_column('P:S', 22)
 
-                    # 3. ABA: Radar de Entradas 311 (A Tabela Fato) - 🔴 AGORA SEMPRE NASCE!
+                    # 3. ABA: Radar de Entradas 311
                     df_monitor.to_excel(writer, sheet_name='MONITOR_ENTRADAS_311', index=False)
-                    wb = writer.book
                     ws_mon = writer.sheets['MONITOR_ENTRADAS_311']
                     ws_mon.freeze_panes(1, 0)
-                    
-                    fmt_qtd_mon = wb.add_format({'num_format': '#,##0.00'})
-                    
                     ws_mon.set_column('A:A', 15); ws_mon.set_column('B:C', 12)
-                    ws_mon.set_column('D:D', 15); ws_mon.set_column('E:E', 30) # O Alerta
+                    ws_mon.set_column('D:D', 15); ws_mon.set_column('E:E', 30)
                     ws_mon.set_column('F:H', 25); ws_mon.set_column('I:I', 15)
-                    ws_mon.set_column('J:J', 40); ws_mon.set_column('K:K', 18, fmt_qtd_mon)
+                    ws_mon.set_column('J:J', 40); ws_mon.set_column('K:K', 18, fmt_num)
                     ws_mon.set_column('L:L', 15)
-                    
+
                     # 4. ABA: Raio-X AMED (Estoque Parado)
                     if not df_raiox.empty:
                         df_raiox.sort_values(by=['SCORE_RISCO', 'VALOR_REAL'], ascending=[False, False], inplace=True)
                         df_raiox.to_excel(writer, sheet_name='RAIO_X_AMED', index=False)
-                        wb = writer.book; ws_raiox = writer.sheets['RAIO_X_AMED']
-                        fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
-                        fmt_num_int = wb.add_format({'num_format': '0'})
+                        ws_raiox = writer.sheets['RAIO_X_AMED']
                         ws_raiox.set_column('A:A', 12); ws_raiox.set_column('P:Q', 12, fmt_num_int)
                         ws_raiox.set_column('R:R', 18, fmt_money); ws_raiox.set_column('S:S', 10, fmt_num_int)
 
@@ -118,10 +122,9 @@ def processar_tudo():
                     if not df_extrato.empty:
                         df_extrato.to_excel(writer, sheet_name='EXTRATO_DIARIO', index=False)
                         ws_ext = writer.sheets['EXTRATO_DIARIO']
-                        fmt_num_ext = wb.add_format({'num_format': '#,##0.00'})
                         ws_ext.set_column('A:A', 15); ws_ext.set_column('B:C', 12)
                         ws_ext.set_column('D:D', 18); ws_ext.set_column('E:E', 40)
-                        ws_ext.set_column('F:F', 12); ws_ext.set_column('G:I', 18, fmt_num_ext)
+                        ws_ext.set_column('F:F', 12); ws_ext.set_column('G:I', 18, fmt_num)
 
                 sucesso = True
             except PermissionError:

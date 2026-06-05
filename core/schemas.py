@@ -7,7 +7,7 @@ SchemaAuditoria = pa.DataFrameSchema({
     "SKU": Column(str, coerce=True), 
     "ID": Column(str, coerce=True),
     "FILA": Column(str, required=False, nullable=True),   # Nova coluna mapeada
-    "Aliado": Column(str, required=False, nullable=True), # Pode vir vazio
+    "ALIADO": Column(str, required=False, nullable=True), # Pode vir vazio
     "UF": Column(str, required=False, nullable=True),     # Pode vir vazio
     
     # Adicionado nullable=True

@@ -33,7 +33,8 @@ class SAPReader:
         try:
             if ',' in texto: texto = texto.replace('.', '').replace(',', '.')
             return float(texto) * multi
-        except: return 0.0
+        except (ValueError, TypeError):
+            return 0.0
 
     @staticmethod
     def extrair_id_valido(valor) -> str | None:
@@ -141,42 +142,64 @@ class SAPReader:
         self.log.info(f"Matriz Exec/Amed: {len(mapa_cen)} IDs mapeados.")
         return mapa_cen, mapa_dep_final
 
-    def gerar_mapa_docs_auditoria(self) -> dict:
-        """Retorna {(id_limpo, sku_limpo): {...}} com docs e qtds por tipo de movimento (261/Z81/262/Z82/501)."""
+    def gerar_mapas_mb51(self) -> tuple[dict, dict]:
+        """
+        Processa a MB51 em passagem única e retorna:
+          - mapa_centros: {id_limpo: {principal, todos}}   → cascata de centros
+          - mapa_docs:    {(id_limpo, sku): {...}}          → enriquecimento documental
+        """
         df = self._carregar_mb51()
         if df.empty:
-            return {}
+            return {}, {}
 
         col_rec   = self._get_col_name(df, 'recebedor')
         col_texto = self._get_col_name(df, 'texto_cabecalho')
+        col_cen   = self._get_col_name(df, 'centro')
         col_mat   = self._get_col_name(df, 'material')
         col_qtd   = self._get_col_name(df, 'quantidade')
         col_mov   = self._get_col_name(df, 'movimento')
         col_doc   = self._get_col_name(df, 'documento')
         col_data  = self._get_col_name(df, 'data_lanc')
-        col_cen   = self._get_col_name(df, 'centro')
 
+        if not col_cen:
+            self.log.warning("gerar_mapas_mb51: coluna CENTRO não encontrada na MB51.")
+            return {}, {}
+
+        # Normalização base (uma única vez sobre o DataFrame completo)
+        df['ID_LIMPO']     = self._extrair_id_limpo(df, col_rec, col_texto)
+        df['CENTRO_LIMPO'] = df[col_cen].astype(str).str.strip()
+        if col_mat:  df[col_mat]  = df[col_mat].apply(self.normalize_str)
+        if col_mov:  df[col_mov]  = df[col_mov].astype(str).str.strip().str.upper()
+        if col_doc:  df[col_doc]  = df[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        if col_qtd:  df[col_qtd]  = df[col_qtd].apply(self.converter_sap_br).abs()
+        if col_data: df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
+
+        df_validos = df[df['ID_LIMPO'] != 'SEM_ID'].copy()
+
+        # ── MAPA CENTROS (todos os movimentos, agrupado por ID) ──────────────
+        def _get_principal(x):
+            modes = x.mode()
+            return modes.iloc[0] if not modes.empty else x.iloc[0]
+
+        def _get_todos(x):
+            return " | ".join(sorted(set(x)))
+
+        agr_centros = df_validos.groupby('ID_LIMPO').agg(
+            principal=('CENTRO_LIMPO', _get_principal),
+            todos=('CENTRO_LIMPO', _get_todos)
+        )
+        mapa_centros = agr_centros.to_dict('index')
+
+        # ── MAPA DOCS (movimentos auditoria, agrupado por ID + SKU) ──────────
         if not all([col_mat, col_qtd, col_mov, col_doc]):
-            self.log.warning("gerar_mapa_docs_auditoria: colunas essenciais não encontradas na MB51.")
-            return {}
-
-        df[col_mov] = df[col_mov].astype(str).str.strip().str.upper()
-        df[col_mat] = df[col_mat].apply(self.normalize_str)
-        df[col_doc] = df[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-        df[col_qtd] = df[col_qtd].apply(self.converter_sap_br).abs()
-        if col_data:
-            df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
-        if col_cen:
-            df[col_cen] = df[col_cen].astype(str).str.strip()
-
-        df['ID_LIMPO'] = self._extrair_id_limpo(df, col_rec, col_texto)
-        df = df[df['ID_LIMPO'] != 'SEM_ID'].copy()
+            self.log.warning("gerar_mapas_mb51: colunas de documentos ausentes. Mapa docs será vazio.")
+            return mapa_centros, {}
 
         movs_alvo = ['261', 'Z81', '262', 'Z82', '501']
-        df = df[df[col_mov].isin(movs_alvo)].copy()
+        df_movs = df_validos[df_validos[col_mov].isin(movs_alvo)].copy()
 
-        if df.empty:
-            return {}
+        if df_movs.empty:
+            return mapa_centros, {}
 
         def _join_docs(x):
             vals = sorted(set(str(v) for v in x if pd.notna(v) and str(v).strip() not in ('', 'nan')))
@@ -185,103 +208,112 @@ class SAPReader:
         def _tem_2025(x):
             return any(pd.notna(d) and hasattr(d, 'year') and d.year == 2025 for d in x)
 
-        df['QTD_261'] = np.where(df[col_mov] == '261', df[col_qtd], 0.0)
-        df['QTD_Z81'] = np.where(df[col_mov] == 'Z81', df[col_qtd], 0.0)
-        df['QTD_262'] = np.where(df[col_mov] == '262', df[col_qtd], 0.0)
-        df['QTD_Z82'] = np.where(df[col_mov] == 'Z82', df[col_qtd], 0.0)
+        df_movs['QTD_261'] = np.where(df_movs[col_mov] == '261', df_movs[col_qtd], 0.0)
+        df_movs['QTD_Z81'] = np.where(df_movs[col_mov] == 'Z81', df_movs[col_qtd], 0.0)
+        df_movs['QTD_262'] = np.where(df_movs[col_mov] == '262', df_movs[col_qtd], 0.0)
+        df_movs['QTD_Z82'] = np.where(df_movs[col_mov] == 'Z82', df_movs[col_qtd], 0.0)
+        df_movs['DOC_261'] = np.where(df_movs[col_mov] == '261', df_movs[col_doc], None)
+        df_movs['DOC_Z81'] = np.where(df_movs[col_mov] == 'Z81', df_movs[col_doc], None)
+        df_movs['DOC_262'] = np.where(df_movs[col_mov] == '262', df_movs[col_doc], None)
+        df_movs['DOC_Z82'] = np.where(df_movs[col_mov] == 'Z82', df_movs[col_doc], None)
+        df_movs['DOC_501'] = np.where(df_movs[col_mov] == '501', df_movs[col_doc], None)
+        df_movs['CEN_501'] = np.where(df_movs[col_mov] == '501', df_movs['CENTRO_LIMPO'], None)
 
-        df['DOC_261'] = np.where(df[col_mov] == '261', df[col_doc], None)
-        df['DOC_Z81'] = np.where(df[col_mov] == 'Z81', df[col_doc], None)
-        df['DOC_262'] = np.where(df[col_mov] == '262', df[col_doc], None)
-        df['DOC_Z82'] = np.where(df[col_mov] == 'Z82', df[col_doc], None)
-        df['DOC_501'] = np.where(df[col_mov] == '501', df[col_doc], None)
-
-        cen_series = df[col_cen] if col_cen else pd.Series('', index=df.index)
-        df['CEN_501'] = np.where(df[col_mov] == '501', cen_series, None)
+        # Centros onde 261/Z81/262/Z82 foram feitos (para aba RASTREIO)
+        mask_aplic_rev = df_movs[col_mov].isin(['261', 'Z81', '262', 'Z82'])
+        df_movs['CEN_APLIC'] = df_movs['CENTRO_LIMPO'].where(mask_aplic_rev, other=None)
 
         if col_data:
-            mask_aplic = df[col_mov].isin(['261', 'Z81'])
-            df['DATA_APLIC'] = df[col_data].where(mask_aplic, other=pd.NaT)
+            mask_261_z81 = df_movs[col_mov].isin(['261', 'Z81'])
+            df_movs['DATA_APLIC'] = df_movs[col_data].where(mask_261_z81, other=pd.NaT)
         else:
-            df['DATA_APLIC'] = pd.NaT
+            df_movs['DATA_APLIC'] = pd.NaT
 
-        agrupado = df.groupby(['ID_LIMPO', col_mat]).agg(
-            qtd_261=('QTD_261', 'sum'),
-            qtd_z81=('QTD_Z81', 'sum'),
-            qtd_262=('QTD_262', 'sum'),
-            qtd_z82=('QTD_Z82', 'sum'),
-            docs_261=('DOC_261', _join_docs),
-            docs_z81=('DOC_Z81', _join_docs),
-            docs_262=('DOC_262', _join_docs),
-            docs_z82=('DOC_Z82', _join_docs),
-            docs_501=('DOC_501', _join_docs),
-            centros_501=('CEN_501', _join_docs),
+        agr_docs = df_movs.groupby(['ID_LIMPO', col_mat]).agg(
+            qtd_261=('QTD_261', 'sum'), qtd_z81=('QTD_Z81', 'sum'),
+            qtd_262=('QTD_262', 'sum'), qtd_z82=('QTD_Z82', 'sum'),
+            docs_261=('DOC_261', _join_docs), docs_z81=('DOC_Z81', _join_docs),
+            docs_262=('DOC_262', _join_docs), docs_z82=('DOC_Z82', _join_docs),
+            docs_501=('DOC_501', _join_docs), centros_501=('CEN_501', _join_docs),
+            centros_aplic=('CEN_APLIC', _join_docs),
             data_aplic_2025=('DATA_APLIC', _tem_2025),
         ).reset_index()
 
-        mapa = {}
-        for _, row in agrupado.iterrows():
-            key = (row['ID_LIMPO'], row[col_mat])
-            mapa[key] = {
-                'qtd_261': row['qtd_261'], 'qtd_z81': row['qtd_z81'],
-                'qtd_262': row['qtd_262'], 'qtd_z82': row['qtd_z82'],
-                'docs_261': row['docs_261'], 'docs_z81': row['docs_z81'],
-                'docs_262': row['docs_262'], 'docs_z82': row['docs_z82'],
-                'docs_501': row['docs_501'], 'centros_501': row['centros_501'],
-                'data_aplic_2025': row['data_aplic_2025'],
-            }
+        # Conversão vetorizada: set_index + to_dict evita iterrows
+        agr_docs = agr_docs.set_index(['ID_LIMPO', col_mat])
+        mapa_docs = agr_docs.to_dict('index')
 
-        self.log.info(f"Mapa de documentos auditoria: {len(mapa)} combinações (ID, SKU) indexadas.")
-        return mapa
+        self.log.info(f"MB51: {len(mapa_centros)} IDs (centros) | {len(mapa_docs)} (ID,SKU) indexados.")
+        return mapa_centros, mapa_docs
 
+    # Wrappers mantidos para compatibilidade (chamam gerar_mapas_mb51 internamente)
     def gerar_mapa_centros_por_id(self) -> dict:
-        df = self._carregar_mb51()
-        if df.empty:
-            return {}
+        centros, _ = self.gerar_mapas_mb51()
+        return centros
 
-        col_rec    = self._get_col_name(df, 'recebedor')
-        col_texto  = self._get_col_name(df, 'texto_cabecalho')
-        col_cen    = self._get_col_name(df, 'centro')
-
-        if not col_cen: return {}
-
-        df['ID_LIMPO']     = self._extrair_id_limpo(df, col_rec, col_texto)
-        df['CENTRO_LIMPO'] = df[col_cen].astype(str).str.strip()
-        df = df[df['ID_LIMPO'] != 'SEM_ID']
-
-        def get_principal(x):
-            modes = x.mode()
-            return modes.iloc[0] if not modes.empty else x.iloc[0]
-
-        def get_todos(x):
-            return " | ".join(sorted(set(x)))
-
-        agrupado = df.groupby('ID_LIMPO').agg(
-            principal=('CENTRO_LIMPO', get_principal),
-            todos=('CENTRO_LIMPO', get_todos)
-        )
-        return agrupado.to_dict('index')
+    def gerar_mapa_docs_auditoria(self) -> dict:
+        _, docs = self.gerar_mapas_mb51()
+        return docs
 
     # --- LEITURAS ANTIGAS E BASES ---
     def carregar_mapa_mb52(self) -> tuple[dict, pd.DataFrame]:
         caminho = self.config['arquivos']['mb52']
         if not os.path.exists(caminho): raise FileNotFoundError(f"MB52 não encontrada: {caminho}")
+
         df_raw = pd.read_excel(caminho, engine='calamine', header=None)
         start = 0
         for i, row in df_raw.head(20).iterrows():
             if 'CENTRO' in [str(c).strip().upper() for c in row.values]:
                 start = i; break
+
+        # Define nomes de coluna a partir do cabeçalho detectado
         df = df_raw.iloc[start+1:].copy()
+        df.columns = [str(c).strip() for c in df_raw.iloc[start]]
+
+        # Tenta detecção por nome (via colunas_sap — inclui nomes reais da MB52)
+        col_centro = self._get_col_name(df, 'centro')
+        col_mat    = self._get_col_name(df, 'material')
+        col_desc   = self._get_col_name(df, 'descricao')
+        col_dep    = self._get_col_name(df, 'deposito')
+        col_qtd    = self._get_col_name(df, 'quantidade')
+        col_val    = self._get_col_name(df, 'valor')
+
+        # Fallback para posições do config (indices_fixos_mb52) quando nome não for encontrado
+        idx = self.config.get('indices_fixos_mb52', {})
+        cols = df.columns.tolist()
+        def _col_or_idx(col_name, key, default):
+            if col_name: return col_name
+            pos = idx.get(key, default)
+            return cols[pos] if pos < len(cols) else None
+
+        col_centro = _col_or_idx(col_centro, 'centro',    0)
+        col_mat    = _col_or_idx(col_mat,    'material',  1)
+        col_desc   = _col_or_idx(col_desc,   'descricao', 2)
+        col_dep    = _col_or_idx(col_dep,    'deposito',  4)
+        col_qtd    = _col_or_idx(col_qtd,    'quantidade',5)
+        col_val    = _col_or_idx(col_val,    'valor',     6)
+
+        if not all([col_centro, col_mat, col_dep, col_qtd]):
+            raise ValueError(
+                f"MB52: colunas essenciais não encontradas. "
+                f"Detectadas: {cols}. Ajuste 'indices_fixos_mb52' no config.yaml."
+            )
+
+        self.log.info(
+            f"MB52: centro='{col_centro}' mat='{col_mat}' dep='{col_dep}' "
+            f"qtd='{col_qtd}' val='{col_val}'"
+        )
+
         mapa = {}
         evidencias = []
         for idx_original, r in df.iterrows():
             try:
-                c    = self.normalize_str(r.iloc[0])
-                s    = self.normalize_str(r.iloc[1])
-                d    = self.normalize_str(r.iloc[4])
-                desc = str(r.iloc[2]).strip()
-                q    = self.converter_sap_br(r.iloc[5])
-                v    = self.converter_sap_br(r.iloc[6])
+                c    = self.normalize_str(r[col_centro])
+                s    = self.normalize_str(r[col_mat])
+                d    = self.normalize_str(r[col_dep])
+                desc = str(r[col_desc]).strip() if col_desc else ''
+                q    = self.converter_sap_br(r[col_qtd])
+                v    = self.converter_sap_br(r[col_val]) if col_val else 0.0
                 chave = (s, c, d)
                 if chave not in mapa: mapa[chave] = {'qtd': 0.0, 'valor': 0.0}
                 mapa[chave]['qtd']   += q
@@ -296,7 +328,14 @@ class SAPReader:
         caminho = self.config['arquivos'].get('base_auditoria')
         if not caminho or not os.path.exists(caminho): raise FileNotFoundError(f"Base Auditoria não encontrada: {caminho}")
         df_raw = pd.read_excel(caminho, engine='calamine', header=None)
-        head = next(i for i, row in df_raw.head(20).iterrows() if 'SKU' in [str(c).upper() for c in row.values])
+
+        head = next(
+            (i for i, row in df_raw.head(20).iterrows() if 'SKU' in [str(c).upper() for c in row.values]),
+            None
+        )
+        if head is None:
+            raise ValueError("Base Auditoria: coluna 'SKU' não encontrada nas primeiras 20 linhas.")
+
         df = df_raw.iloc[head+1:].reset_index(drop=True)
         df.columns = [str(c).strip() for c in df_raw.iloc[head]]
 
@@ -337,6 +376,11 @@ class SAPReader:
         col_lote   = self._get_col_name(df, 'lote')
         col_nome1  = self._get_col_name(df, 'nome1')
 
+        # Guard: colunas obrigatórias para o motor funcionar
+        if not all([col_centro, col_dep, col_mat, col_qtd, col_mov]):
+            self.log.warning("gerar_raio_x_amed: colunas essenciais ausentes na MB51. Abortando.")
+            return pd.DataFrame()
+
         if col_data: df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
 
         df[col_mov]    = df[col_mov].astype(str).str.strip()
@@ -360,13 +404,15 @@ class SAPReader:
         analise = []
         hoje    = datetime.now()
 
+        # cols_sort filtra None para não passar None ao sort_values
+        cols_sort_base = [c for c in [col_data, col_doc] if c]
+        if col_item: cols_sort_base.append(col_item)
+
         termos_manut = self.regras.get('termos_manutencao', ['MNT', 'MTN', 'MANUT', 'REPARO', 'CORRETIVA'])
         self.log.info(f"Processando {len(grupos)} pilhas de estoque consolidadas (Raio-X)...")
 
         for (id_dono, material, centro, deposito, lote), grupo in grupos:
-            cols_sort = [col_data, col_doc]
-            if col_item: cols_sort.append(col_item)
-            grupo = grupo.sort_values(by=cols_sort)
+            grupo = grupo.sort_values(by=cols_sort_base) if cols_sort_base else grupo
 
             pilha_estoque    = []
             historico_consumo = []
@@ -379,7 +425,7 @@ class SAPReader:
                 val_total  = abs(self.converter_sap_br(row_tuple[col_indices[col_val]])) if col_val else 0
                 sentido    = row_tuple[col_indices['SENTIDO_REAL']]
                 tipo_especial = str(row_tuple[col_indices['TIPO_ESPECIAL']])
-                data_mov   = row_tuple[col_indices[col_data]]
+                data_mov   = row_tuple[col_indices[col_data]] if col_data else None
                 mov        = row_tuple[col_indices[col_mov]]
                 doc_atual  = row_tuple[col_indices[col_doc]]  if col_doc  else "-"
                 usr_atual  = row_tuple[col_indices[col_user]] if col_user else "-"
@@ -468,7 +514,16 @@ class SAPReader:
             responsavel_atual = f"USR_SAP: {user_entrada}" if id_dono == 'SEM_ID' else nome_empresa
             desc_material     = str(grupo[col_desc].iloc[0]) if col_desc else ''
 
-            analise.append({'SCORE_RISCO': score_risco, 'STATUS': status_final, 'TIPO_AÇÃO': tipo_acao, 'CAUSA_RAIZ': causa, 'AÇÃO_SUGERIDA': acao, 'RESPONSÁVEL_ATUAL': responsavel_atual, 'LOG_AUDITORIA': log_final, 'FRENTE': frente, 'ID_RECEBEDOR': id_dono, 'NOME_PARCEIRO': nome_empresa, 'MATERIAL': material, 'DESCRIÇÃO': desc_material, 'CENTRO': centro, 'DEPÓSITO': deposito, 'LOTE': lote, 'SALDO_RECONSTRUÍDO': saldo_reconstruido, 'SALDO_MB52_REF': saldo_mb52, 'VALOR_REAL': valor_real_parado, 'AGING_DIAS': aging, 'DT_REF_AGING': dt_fmt, 'DOC_ORIGEM': f"{mov_entrada}-{doc_entrada}", 'RESPONSÁVEL_MOV': user_entrada})
+            analise.append({
+                'SCORE_RISCO': score_risco, 'STATUS': status_final, 'TIPO_AÇÃO': tipo_acao,
+                'CAUSA_RAIZ': causa, 'AÇÃO_SUGERIDA': acao, 'RESPONSÁVEL_ATUAL': responsavel_atual,
+                'LOG_AUDITORIA': log_final, 'FRENTE': frente, 'ID_RECEBEDOR': id_dono,
+                'NOME_PARCEIRO': nome_empresa, 'MATERIAL': material, 'DESCRIÇÃO': desc_material,
+                'CENTRO': centro, 'DEPÓSITO': deposito, 'LOTE': lote,
+                'SALDO_RECONSTRUÍDO': saldo_reconstruido, 'SALDO_MB52_REF': saldo_mb52,
+                'VALOR_REAL': valor_real_parado, 'AGING_DIAS': aging, 'DT_REF_AGING': dt_fmt,
+                'DOC_ORIGEM': f"{mov_entrada}-{doc_entrada}", 'RESPONSÁVEL_MOV': user_entrada,
+            })
 
         return pd.DataFrame(analise)
 
@@ -488,7 +543,9 @@ class SAPReader:
         col_rec    = self._get_col_name(df, 'recebedor')
         col_texto  = self._get_col_name(df, 'texto_cabecalho')
 
-        if not col_data: return pd.DataFrame()
+        if not all([col_data, col_dep, col_mat, col_centro, col_qtd]):
+            self.log.warning("gerar_extrato_diario: colunas essenciais ausentes na MB51. Abortando.")
+            return pd.DataFrame()
 
         df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
         data_limite  = datetime.now() - pd.Timedelta(days=dias_retroativos)
@@ -497,7 +554,7 @@ class SAPReader:
         df[col_dep]    = df[col_dep].astype(str).str.strip().str.upper()
         df[col_mat]    = df[col_mat].apply(self.normalize_str)
         df[col_centro] = df[col_centro].apply(self.normalize_str)
-        df['DESC_LIMPA'] = df[col_desc].astype(str).str.strip()
+        df['DESC_LIMPA'] = df[col_desc].astype(str).str.strip() if col_desc else '-'
 
         df['ID_LIMPO'] = self._extrair_id_limpo(df, col_rec, col_texto)
 
@@ -532,73 +589,97 @@ class SAPReader:
         agrupado.drop(columns=[col_data], inplace=True)
         return agrupado
 
-    def gerar_rastreio_aplicacoes(self, df_auditoria: pd.DataFrame) -> pd.DataFrame:
-        df = self._carregar_mb51()
-        if df.empty:
-            return pd.DataFrame()
-
+    def gerar_rastreio_aplicacoes(self, df_auditoria: pd.DataFrame, mapa_docs_aud: dict | None = None) -> pd.DataFrame:
+        """
+        Gera a aba RASTREIO_APLICACOES. Se mapa_docs_aud for fornecido (pré-computado por
+        gerar_mapas_mb51), reutiliza os dados sem nova leitura da MB51.
+        """
         self.log.info("Acionando Motor Analítico: Rastreio de Documentos (MB51)...")
 
-        col_centro = self._get_col_name(df, 'centro')
-        col_mat    = self._get_col_name(df, 'material')
-        col_qtd    = self._get_col_name(df, 'quantidade')
-        col_mov    = self._get_col_name(df, 'movimento')
-        col_rec    = self._get_col_name(df, 'recebedor')
-        col_texto  = self._get_col_name(df, 'texto_cabecalho')
-        col_doc    = self._get_col_name(df, 'documento')
+        if mapa_docs_aud:
+            # ── Caminho rápido: usa o mapa já calculado ──────────────────────
+            records = [
+                {
+                    'ID_STR':              id_limpo,
+                    'SKU_STR':             sku,
+                    'CENTRO APLICADO SAP': info.get('centros_aplic', '') or '-',
+                    'QTD APLICADA 261':    info.get('qtd_261', 0),
+                    'QTD APLICADA Z81':    info.get('qtd_z81', 0),
+                    'QTD ESTORNADA 262':   info.get('qtd_262', 0),
+                    'QTD ESTORNADA Z82':   info.get('qtd_z82', 0),
+                    'DOCS APLIC. 261':     info.get('docs_261', '') or '-',
+                    'DOCS APLIC. Z81':     info.get('docs_z81', '') or '-',
+                    'DOCS ESTORNO 262':    info.get('docs_262', '') or '-',
+                    'DOCS ESTORNO Z82':    info.get('docs_z82', '') or '-',
+                }
+                for (id_limpo, sku), info in mapa_docs_aud.items()
+                if any(info.get(k, 0) > 0 for k in ['qtd_261', 'qtd_z81', 'qtd_262', 'qtd_z82'])
+            ]
+            agrupado = pd.DataFrame(records)
+        else:
+            # ── Caminho original: lê MB51 ─────────────────────────────────────
+            df = self._carregar_mb51()
+            if df.empty:
+                return pd.DataFrame()
 
-        df[col_mov] = df[col_mov].astype(str).str.strip().str.upper()
+            col_centro = self._get_col_name(df, 'centro')
+            col_mat    = self._get_col_name(df, 'material')
+            col_qtd    = self._get_col_name(df, 'quantidade')
+            col_mov    = self._get_col_name(df, 'movimento')
+            col_rec    = self._get_col_name(df, 'recebedor')
+            col_texto  = self._get_col_name(df, 'texto_cabecalho')
+            col_doc    = self._get_col_name(df, 'documento')
 
-        movs_alvo = ['261', '262', 'Z81', 'Z82']
-        df_filtro = df[df[col_mov].isin(movs_alvo)].copy()
+            if not all([col_mat, col_qtd, col_mov, col_doc]):
+                self.log.warning("gerar_rastreio_aplicacoes: colunas essenciais ausentes na MB51.")
+                return pd.DataFrame()
 
-        if df_filtro.empty:
-            self.log.warning("Nenhum movimento de aplicação/estorno encontrado na MB51.")
-            return pd.DataFrame()
+            df[col_mov] = df[col_mov].astype(str).str.strip().str.upper()
 
-        df_filtro[col_mat]    = df_filtro[col_mat].apply(self.normalize_str)
-        df_filtro[col_centro] = df_filtro[col_centro].apply(self.normalize_str)
-        df_filtro[col_qtd]    = df_filtro[col_qtd].apply(self.converter_sap_br).abs()
-        df_filtro[col_doc]    = df_filtro[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            movs_alvo = ['261', '262', 'Z81', 'Z82']
+            df_filtro = df[df[col_mov].isin(movs_alvo)].copy()
 
-        df_filtro['ID_LIMPO'] = self._extrair_id_limpo(df_filtro, col_rec, col_texto)
-        df_filtro = df_filtro[df_filtro['ID_LIMPO'] != 'SEM_ID']
+            if df_filtro.empty:
+                self.log.warning("Nenhum movimento de aplicação/estorno encontrado na MB51.")
+                return pd.DataFrame()
 
-        df_filtro['QTD_261'] = np.where(df_filtro[col_mov] == '261', df_filtro[col_qtd], 0.0)
-        df_filtro['QTD_Z81'] = np.where(df_filtro[col_mov] == 'Z81', df_filtro[col_qtd], 0.0)
-        df_filtro['QTD_262'] = np.where(df_filtro[col_mov] == '262', df_filtro[col_qtd], 0.0)
-        df_filtro['QTD_Z82'] = np.where(df_filtro[col_mov] == 'Z82', df_filtro[col_qtd], 0.0)
+            df_filtro[col_mat]    = df_filtro[col_mat].apply(self.normalize_str)
+            if col_centro: df_filtro[col_centro] = df_filtro[col_centro].apply(self.normalize_str)
+            df_filtro[col_qtd]    = df_filtro[col_qtd].apply(self.converter_sap_br).abs()
+            df_filtro[col_doc]    = df_filtro[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            df_filtro['ID_LIMPO'] = self._extrair_id_limpo(df_filtro, col_rec, col_texto)
+            df_filtro = df_filtro[df_filtro['ID_LIMPO'] != 'SEM_ID']
 
-        df_filtro['DOC_261'] = np.where(df_filtro[col_mov] == '261', df_filtro[col_doc], None)
-        df_filtro['DOC_Z81'] = np.where(df_filtro[col_mov] == 'Z81', df_filtro[col_doc], None)
-        df_filtro['DOC_262'] = np.where(df_filtro[col_mov] == '262', df_filtro[col_doc], None)
-        df_filtro['DOC_Z82'] = np.where(df_filtro[col_mov] == 'Z82', df_filtro[col_doc], None)
+            df_filtro['QTD_261'] = np.where(df_filtro[col_mov] == '261', df_filtro[col_qtd], 0.0)
+            df_filtro['QTD_Z81'] = np.where(df_filtro[col_mov] == 'Z81', df_filtro[col_qtd], 0.0)
+            df_filtro['QTD_262'] = np.where(df_filtro[col_mov] == '262', df_filtro[col_qtd], 0.0)
+            df_filtro['QTD_Z82'] = np.where(df_filtro[col_mov] == 'Z82', df_filtro[col_qtd], 0.0)
+            df_filtro['DOC_261'] = np.where(df_filtro[col_mov] == '261', df_filtro[col_doc], None)
+            df_filtro['DOC_Z81'] = np.where(df_filtro[col_mov] == 'Z81', df_filtro[col_doc], None)
+            df_filtro['DOC_262'] = np.where(df_filtro[col_mov] == '262', df_filtro[col_doc], None)
+            df_filtro['DOC_Z82'] = np.where(df_filtro[col_mov] == 'Z82', df_filtro[col_doc], None)
 
-        def join_unique(x):
-            v = set(str(i) for i in x if pd.notna(i) and str(i).strip() != "")
-            return " | ".join(sorted(v)) if v else "-"
+            def join_unique(x):
+                v = set(str(i) for i in x if pd.notna(i) and str(i).strip() != "")
+                return " | ".join(sorted(v)) if v else "-"
 
-        agrupado = df_filtro.groupby(['ID_LIMPO', col_mat]).agg(
-            CENTRO_APLICADO=(col_centro, join_unique),
-            QTD_261=('QTD_261', 'sum'),
-            QTD_Z81=('QTD_Z81', 'sum'),
-            QTD_262=('QTD_262', 'sum'),
-            QTD_Z82=('QTD_Z82', 'sum'),
-            DOCS_261=('DOC_261', join_unique),
-            DOCS_Z81=('DOC_Z81', join_unique),
-            DOCS_262=('DOC_262', join_unique),
-            DOCS_Z82=('DOC_Z82', join_unique)
-        ).reset_index()
+            agg_cols = {'QTD_261': 'sum', 'QTD_Z81': 'sum', 'QTD_262': 'sum', 'QTD_Z82': 'sum',
+                        'DOC_261': join_unique, 'DOC_Z81': join_unique, 'DOC_262': join_unique, 'DOC_Z82': join_unique}
+            if col_centro: agg_cols[col_centro] = join_unique
 
-        agrupado.rename(columns={
-            'ID_LIMPO': 'ID_STR', col_mat: 'SKU_STR',
-            'CENTRO_APLICADO':  'CENTRO APLICADO SAP',
-            'QTD_261': 'QTD APLICADA 261', 'QTD_Z81': 'QTD APLICADA Z81',
-            'QTD_262': 'QTD ESTORNADA 262', 'QTD_Z82': 'QTD ESTORNADA Z82',
-            'DOCS_261': 'DOCS APLIC. 261', 'DOCS_Z81': 'DOCS APLIC. Z81',
-            'DOCS_262': 'DOCS ESTORNO 262', 'DOCS_Z82': 'DOCS ESTORNO Z82'
-        }, inplace=True)
+            agrupado_raw = df_filtro.groupby(['ID_LIMPO', col_mat]).agg(agg_cols).reset_index()
+            agrupado = agrupado_raw.rename(columns={
+                'ID_LIMPO': 'ID_STR', col_mat: 'SKU_STR',
+                col_centro: 'CENTRO APLICADO SAP' if col_centro else None,
+                'QTD_261': 'QTD APLICADA 261', 'QTD_Z81': 'QTD APLICADA Z81',
+                'QTD_262': 'QTD ESTORNADA 262', 'QTD_Z82': 'QTD ESTORNADA Z82',
+                'DOC_261': 'DOCS APLIC. 261', 'DOC_Z81': 'DOCS APLIC. Z81',
+                'DOC_262': 'DOCS ESTORNO 262', 'DOC_Z82': 'DOCS ESTORNO Z82',
+            })
+            if 'CENTRO APLICADO SAP' not in agrupado.columns:
+                agrupado['CENTRO APLICADO SAP'] = '-'
 
+        # ── Merge com base de auditoria (comum aos dois caminhos) ─────────────
         df_base = df_auditoria.copy()
         df_base['ID_STR']  = df_base['ID'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.upper()
         df_base['SKU_STR'] = df_base['SKU'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.upper()
@@ -679,7 +760,9 @@ class SAPReader:
         col_doc    = self._get_col_name(df, 'documento')
         col_user   = self._get_col_name(df, 'usuario')
 
-        if not col_data: return pd.DataFrame(columns=cols_finais)
+        if not all([col_data, col_dep, col_mov, col_qtd]):
+            self.log.warning("gerar_monitor_entradas_311: colunas essenciais ausentes na MB51.")
+            return pd.DataFrame(columns=cols_finais)
 
         df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
         data_limite  = datetime.now() - pd.Timedelta(days=7)
@@ -699,9 +782,9 @@ class SAPReader:
             self.log.info("Radar Limpo: Nenhuma transferência 311 para EXEC/AMED nos últimos 7 dias.")
             return pd.DataFrame(columns=cols_finais)
 
-        df_filtro[col_mat]    = df_filtro[col_mat].apply(self.normalize_str)
-        df_filtro[col_centro] = df_filtro[col_centro].apply(self.normalize_str)
-        df_filtro[col_doc]    = df_filtro[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        if col_mat:    df_filtro[col_mat]    = df_filtro[col_mat].apply(self.normalize_str)
+        if col_centro: df_filtro[col_centro] = df_filtro[col_centro].apply(self.normalize_str)
+        if col_doc:    df_filtro[col_doc]    = df_filtro[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
 
         df_filtro['DATA TRANSFERÊNCIA'] = df_filtro[col_data].dt.strftime('%d/%m/%Y')
         df_filtro['USUÁRIO SAP']        = df_filtro[col_user].astype(str).str.strip() if col_user else "-"
@@ -738,14 +821,13 @@ class SAPReader:
             rastreio['EPS / ALIADO']      = 'NÃO IDENTIFICADA'
             rastreio['FRENTE DE ATUAÇÃO'] = 'DESCONHECIDA'
 
-        rastreio.rename(columns={
-            col_centro: 'CENTRO',
-            col_dep:    'DEPÓSITO DESTINO',
-            'ID_LIMPO': 'ID RECEBEDOR',
-            col_mat:    'SKU',
-            col_qtd:    'QTD TRANSFERIDA',
-            col_doc:    'DOC. MATERIAL'
-        }, inplace=True)
+        rename_map = {'ID_LIMPO': 'ID RECEBEDOR'}
+        if col_centro: rename_map[col_centro] = 'CENTRO'
+        if col_dep:    rename_map[col_dep]    = 'DEPÓSITO DESTINO'
+        if col_mat:    rename_map[col_mat]    = 'SKU'
+        if col_qtd:    rename_map[col_qtd]    = 'QTD TRANSFERIDA'
+        if col_doc:    rename_map[col_doc]    = 'DOC. MATERIAL'
+        rastreio.rename(columns=rename_map, inplace=True)
 
         mask_orfao = rastreio['ID RECEBEDOR'] == 'SEM_ID'
         rastreio.loc[mask_orfao, 'EPS / ALIADO']      = 'NÃO IDENTIFICADA'

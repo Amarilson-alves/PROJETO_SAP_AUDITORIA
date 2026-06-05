@@ -21,22 +21,41 @@ indices_fixos:
   centro_col_dep: 13   # Coluna Depósito
 
 # 4. MAPEAMENTO DE COLUNAS SAP
+# Nomes reais verificados em 2026-06:
+#   MB51 → CENTRO | DEPÓSITO | MATERIAL | TEXTO BREVE MATERIAL | QUANTIDADE |
+#           DATA DE LANÇAMENTO | TIPO DE MOVIMENTO | RECEBEDOR MERCADORIA |
+#           MONTANTE EM MI | TEXTO CABEÇALHO DOCUMENTO | DOC.MATERIAL | ITEM |
+#           LOTE | NOME 1 | NOME DO USUÁRIO
+#   MB52 → Centro | Material | Texto breve material | UM básica | Depósito |
+#           Utilização livre | Val.utiliz.livre | Lote | Nome 1
 colunas_sap:
-  centro: ["CENTRO", "WERKS"]
-  deposito: ["DEPÓSITO", "DEPOSITO", "LGORT"]
-  material: ["MATERIAL", "MAT."]
-  descricao: ["TEXTO BREVE", "DESCRIÇÃO"]
-  quantidade: ["QUANTIDADE", "QTD"]
-  valor: ["MONTANTE", "VALOR", "DMBTR"]
-  movimento: ["MOVIMENTO", "BWART"]
-  recebedor: ["RECEBEDOR", "RECEP.", "WEMPF", "DESTINATÁRIO"]
+  centro:          ["CENTRO", "WERKS"]
+  deposito:        ["DEPÓSITO", "DEPOSITO", "LGORT"]
+  material:        ["MATERIAL", "MAT."]
+  descricao:       ["TEXTO BREVE", "DESCRIÇÃO"]
+  quantidade:      ["QUANTIDADE", "QTD", "Utilização livre"]   # MB52 usa "Utilização livre"
+  valor:           ["MONTANTE", "VALOR", "DMBTR", "Val.utiliz.livre"]  # MB52 usa "Val.utiliz.livre"
+  movimento:       ["MOVIMENTO", "BWART", "TIPO DE MOVIMENTO"]
+  recebedor:       ["RECEBEDOR", "RECEP.", "WEMPF", "DESTINATÁRIO"]
   texto_cabecalho: ["TEXTO CABEÇALHO", "TEXTO", "SGTXT", "BKTXT"]
-  data_lanc: ["DATA DE LANÇAMENTO", "DATA LANC.", "BUDAT"]
-  documento: ["DOC.MATERIAL", "DOCUMENTO"]
-  item: ["ITEM", "ITEM DO DOCUMENTO", "ZEILE"]
-  usuario: ["USUÁRIO", "USUARIO", "USNAM"]
-  lote: ["LOTE", "CHARG"]
-  nome1: ["NOME 1", "NOME1"]
+  data_lanc:       ["DATA DE LANÇAMENTO", "DATA LANC.", "BUDAT"]
+  documento:       ["DOC.MATERIAL", "DOCUMENTO"]
+  item:            ["ITEM", "ITEM DO DOCUMENTO", "ZEILE"]
+  usuario:         ["USUÁRIO", "USUARIO", "USNAM", "NOME DO USUÁRIO"]
+  lote:            ["LOTE", "CHARG"]
+  nome1:           ["NOME 1", "NOME1"]
+
+# 4b. POSIÇÕES DE COLUNA DA MB52 (fallback se detecção por nome falhar)
+# Verificado em 2026-06 com export SAP padrão:
+#   0:Centro | 1:Material | 2:Texto breve material | 3:UM básica |
+#   4:Depósito | 5:Utilização livre | 6:Val.utiliz.livre
+indices_fixos_mb52:
+  centro:    0
+  material:  1
+  descricao: 2
+  deposito:  4
+  quantidade: 5
+  valor:     6
 
 layout_saida:
   offset_dashboard: 0
