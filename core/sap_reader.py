@@ -239,6 +239,19 @@ class SAPReader:
             data_aplic_2025=('DATA_APLIC', _tem_2025),
         ).reset_index()
 
+        # Último doc por tipo de movimento (ordenado por data — o mais recente para cada ID+SKU)
+        for mov_code, col_name in [('261', 'ultimo_261'), ('Z81', 'ultimo_z81'),
+                                    ('262', 'ultimo_262'), ('Z82', 'ultimo_z82')]:
+            df_sub = df_movs[df_movs[col_mov] == mov_code]
+            if not df_sub.empty:
+                sorted_sub = df_sub.sort_values(col_data) if col_data else df_sub
+                ultimo = sorted_sub.groupby(['ID_LIMPO', col_mat])[col_doc].last().reset_index()
+                ultimo.rename(columns={col_doc: col_name}, inplace=True)
+                agr_docs = agr_docs.merge(ultimo, on=['ID_LIMPO', col_mat], how='left')
+                agr_docs[col_name] = agr_docs[col_name].fillna('')
+            else:
+                agr_docs[col_name] = ''
+
         # Conversão vetorizada: set_index + to_dict evita iterrows
         agr_docs = agr_docs.set_index(['ID_LIMPO', col_mat])
         mapa_docs = agr_docs.to_dict('index')

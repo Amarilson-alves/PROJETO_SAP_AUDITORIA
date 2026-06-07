@@ -218,7 +218,7 @@ class AuditoriaAMED:
         df_aud['RESULTADO_OPERACIONAL'] = df_aud['STATUS']
 
         # 5. Enriquecimento Documental (DOC APLICAÇÃO / DOC ESTORNO / ESTORNO 2025 / DE-PARA)
-        _colunas_doc = ['DOC APLICAÇÃO', 'DOC ESTORNO', 'ESTORNO 2025', 'DOC ESTORNO 2025', 'POSSÍVEL DE-PARA']
+        _colunas_doc = ['DOC - APLI - AUTO', 'DOC - EST - AUTO', 'ESTORNO 2025', 'DOC ESTORNO 2025', 'POSSÍVEL DE-PARA']
         if mapa_docs_aud:
             l_doc_aplic, l_doc_est, l_est_2025, l_doc_est_2025 = [], [], [], []
 
@@ -229,25 +229,19 @@ class AuditoriaAMED:
                 is_vivo = mask_vivo.loc[idx]
                 info   = mapa_docs_aud.get((id_b, sku_b), {})
 
-                # DOC APLICAÇÃO — apenas para FALTA (saldo < 0)
+                # DOC APLICAÇÃO — último doc 261/Z81 para o ID+SKU quando há FALTA
                 if saldo < 0:
-                    qtd_n    = round(abs(saldo), 4)
-                    chv_qtd  = 'qtd_z81'  if is_vivo else 'qtd_261'
-                    chv_doc  = 'docs_z81' if is_vivo else 'docs_261'
-                    qtd_a    = round(info.get(chv_qtd, 0), 4)
-                    docs     = info.get(chv_doc, '')
-                    l_doc_aplic.append(docs if docs and abs(qtd_a - qtd_n) < 0.01 else '-')
+                    chv = 'ultimo_z81' if is_vivo else 'ultimo_261'
+                    doc = info.get(chv, '') or ''
+                    l_doc_aplic.append(doc if doc else '-')
                 else:
                     l_doc_aplic.append('-')
 
-                # DOC ESTORNO — apenas para ESTORNO (saldo > 0)
+                # DOC ESTORNO — último doc 262/Z82 para o ID+SKU quando há ESTORNO
                 if saldo > 0:
-                    qtd_n    = round(abs(saldo), 4)
-                    chv_qtd  = 'qtd_z82'  if is_vivo else 'qtd_262'
-                    chv_doc  = 'docs_z82' if is_vivo else 'docs_262'
-                    qtd_r    = round(info.get(chv_qtd, 0), 4)
-                    docs     = info.get(chv_doc, '')
-                    l_doc_est.append(docs if docs and abs(qtd_r - qtd_n) < 0.01 else '-')
+                    chv = 'ultimo_z82' if is_vivo else 'ultimo_262'
+                    doc = info.get(chv, '') or ''
+                    l_doc_est.append(doc if doc else '-')
                 else:
                     l_doc_est.append('-')
 
@@ -268,8 +262,8 @@ class AuditoriaAMED:
                     l_est_2025.append('-')
                     l_doc_est_2025.append('-')
 
-            df_aud['DOC APLICAÇÃO']    = l_doc_aplic
-            df_aud['DOC ESTORNO']      = l_doc_est
+            df_aud['DOC - APLI - AUTO'] = l_doc_aplic
+            df_aud['DOC - EST - AUTO']  = l_doc_est
             df_aud['ESTORNO 2025']     = l_est_2025
             df_aud['DOC ESTORNO 2025'] = l_doc_est_2025
 
