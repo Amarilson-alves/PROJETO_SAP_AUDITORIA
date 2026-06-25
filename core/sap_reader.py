@@ -172,7 +172,7 @@ class SAPReader:
         if col_mov:  df[col_mov]  = df[col_mov].astype(str).str.strip().str.upper()
         if col_doc:  df[col_doc]  = df[col_doc].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
         if col_qtd:  df[col_qtd]  = df[col_qtd].apply(self.converter_sap_br).abs()
-        if col_data: df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
+        if col_data: df[col_data] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
 
         df_validos = df[df['ID_LIMPO'] != 'SEM_ID'].copy()
 
@@ -244,7 +244,7 @@ class SAPReader:
                                     ('262', 'ultimo_262'), ('Z82', 'ultimo_z82')]:
             df_sub = df_movs[df_movs[col_mov] == mov_code]
             if not df_sub.empty:
-                sorted_sub = df_sub.sort_values(col_data) if col_data else df_sub
+                sorted_sub = df_sub.sort_values(col_data, na_position='first') if col_data else df_sub
                 ultimo = sorted_sub.groupby(['ID_LIMPO', col_mat])[col_doc].last().reset_index()
                 ultimo.rename(columns={col_doc: col_name}, inplace=True)
                 agr_docs = agr_docs.merge(ultimo, on=['ID_LIMPO', col_mat], how='left')
