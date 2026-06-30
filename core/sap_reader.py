@@ -239,18 +239,24 @@ class SAPReader:
             data_aplic_2025=('DATA_APLIC', _tem_2025),
         ).reset_index()
 
-        # Último doc por tipo de movimento (ordenado por data — o mais recente para cada ID+SKU)
-        for mov_code, col_name in [('261', 'ultimo_261'), ('Z81', 'ultimo_z81'),
-                                    ('262', 'ultimo_262'), ('Z82', 'ultimo_z82')]:
-            df_sub = df_movs[df_movs[col_mov] == mov_code]
+        # Último doc unificado: 261+Z81 = APLICAÇÃO, 262+Z82 = ESTORNO
+        # Guarda doc + data para comparar qual foi o movimento mais recente
+        for tipos, nome_doc, nome_data in [
+            (['261', 'Z81'], 'ultimo_aplic',   'data_ultimo_aplic'),
+            (['262', 'Z82'], 'ultimo_estorno', 'data_ultimo_estorno'),
+        ]:
+            df_sub = df_movs[df_movs[col_mov].isin(tipos)]
             if not df_sub.empty:
-                sorted_sub = df_sub.sort_values(col_data, na_position='first') if col_data else df_sub
-                ultimo = sorted_sub.groupby(['ID_LIMPO', col_mat])[col_doc].last().reset_index()
-                ultimo.rename(columns={col_doc: col_name}, inplace=True)
-                agr_docs = agr_docs.merge(ultimo, on=['ID_LIMPO', col_mat], how='left')
-                agr_docs[col_name] = agr_docs[col_name].fillna('')
+                s = df_sub.sort_values(col_data, na_position='first') if col_data else df_sub
+                grp      = s.groupby(['ID_LIMPO', col_mat])
+                agg_doc  = grp[col_doc].last().rename(nome_doc)
+                agg_data = grp[col_data].last().rename(nome_data) if col_data else pd.Series(pd.NaT, name=nome_data)
+                agg = pd.concat([agg_doc, agg_data], axis=1).reset_index()
+                agr_docs = agr_docs.merge(agg, on=['ID_LIMPO', col_mat], how='left')
+                agr_docs[nome_doc] = agr_docs[nome_doc].fillna('')
             else:
-                agr_docs[col_name] = ''
+                agr_docs[nome_doc] = ''
+                agr_docs[nome_data] = pd.NaT
 
         # Conversão vetorizada: set_index + to_dict evita iterrows
         agr_docs = agr_docs.set_index(['ID_LIMPO', col_mat])

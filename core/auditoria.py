@@ -226,23 +226,36 @@ class AuditoriaAMED:
                 id_b   = r['ID_STR']
                 sku_b  = r['SKU_STR']
                 saldo  = r['SALDO_AUDIT']
-                is_vivo = mask_vivo.loc[idx]
                 info   = mapa_docs_aud.get((id_b, sku_b), {})
 
-                # DOC APLICAÇÃO — último doc 261/Z81 para o ID+SKU quando há FALTA
-                if saldo < 0:
-                    chv = 'ultimo_z81' if is_vivo else 'ultimo_261'
-                    doc = info.get(chv, '') or ''
-                    l_doc_aplic.append(doc if doc else '-')
+                # DOC - APLI - AUTO / DOC - EST - AUTO
+                # 261 e Z81 = aplicação; 262 e Z82 = estorno (tratados como equivalentes)
+                # Mostra apenas o mais recente: se estorno veio depois da aplicação, limpa
+                # o doc de aplicação (e vice-versa)
+                doc_aplic    = info.get('ultimo_aplic',   '') or ''
+                doc_estorno  = info.get('ultimo_estorno', '') or ''
+                data_aplic   = info.get('data_ultimo_aplic',   pd.NaT)
+                data_estorno = info.get('data_ultimo_estorno', pd.NaT)
+
+                if doc_aplic and doc_estorno:
+                    if pd.notna(data_aplic) and pd.notna(data_estorno):
+                        aplic_mais_recente = data_aplic >= data_estorno
+                    else:
+                        aplic_mais_recente = pd.notna(data_aplic)
+                    if aplic_mais_recente:
+                        l_doc_aplic.append(doc_aplic)
+                        l_doc_est.append('-')
+                    else:
+                        l_doc_aplic.append('-')
+                        l_doc_est.append(doc_estorno)
+                elif doc_aplic:
+                    l_doc_aplic.append(doc_aplic)
+                    l_doc_est.append('-')
+                elif doc_estorno:
+                    l_doc_aplic.append('-')
+                    l_doc_est.append(doc_estorno)
                 else:
                     l_doc_aplic.append('-')
-
-                # DOC ESTORNO — último doc 262/Z82 para o ID+SKU quando há ESTORNO
-                if saldo > 0:
-                    chv = 'ultimo_z82' if is_vivo else 'ultimo_262'
-                    doc = info.get(chv, '') or ''
-                    l_doc_est.append(doc if doc else '-')
-                else:
                     l_doc_est.append('-')
 
                 # ESTORNO 2025 — saldo > 0 E aplicação original foi em 2025
